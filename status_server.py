@@ -269,9 +269,6 @@ def _render_html():
 
     if last_run:
         ts = escape(last_run.get("timestamp", "unknown"))
-        total = last_run.get("total_count", 0)
-        sent = last_run.get("sent", False)
-        sent_badge = "<span class='badge badge-ok'>sent</span>" if sent else "<span class='badge badge-muted'>not sent</span>"
         run_rows = ""
         for r in last_run.get("mailboxes", []):
             st = r.get("status", "unknown")
@@ -292,10 +289,7 @@ def _render_html():
             )
         last_run_html = (
             f"<section class='card'>"
-            f"<div class='card-header'><p class='card-title'>Last Run &nbsp;\u00b7&nbsp; {ts}</p>"
-            f"<div style='display:flex;gap:.5rem;align-items:center'>"
-            f"<span style='font-size:.78rem;color:var(--muted)'>{total} spam email(s)</span>"
-            f"{sent_badge}</div></div>"
+            f"<div class='card-header'><p class='card-title'>Last Run &nbsp;\u00b7&nbsp; {ts}</p></div>"
             f"<div class='table-wrap'><table>"
             f"<thead><tr><th>Mailbox</th><th>Folder</th><th>Status</th><th>Spam found</th><th>Duration</th><th>Digest sent</th><th>Error</th></tr></thead>"
             f"<tbody>{run_rows}</tbody></table></div></section>"
