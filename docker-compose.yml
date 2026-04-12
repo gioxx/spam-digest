@@ -1,0 +1,50 @@
+services:
+  spam-digest:
+    image: ghcr.io/gioxx/spam-digest:latest
+    # build: .   # uncomment to build locally
+    container_name: spam-digest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"          # status dashboard
+    environment:
+      TZ: Europe/Rome
+
+      # --- Single mailbox ---
+      IMAP_SERVER: imap.example.com
+      IMAP_PORT: "993"
+      EMAIL_USER: you@example.com
+      EMAIL_PASS: your-imap-password
+      SPAM_FOLDER: Junk
+      MAX_EMAILS: "100"
+
+      # --- SMTP ---
+      SMTP_HOST: smtp.example.com
+      SMTP_PORT: "587"
+      SMTP_USER: you@example.com
+      SMTP_PASS: your-smtp-password
+      DIGEST_TO: you@example.com
+      SEND_IF_EMPTY: "false"
+
+      # --- AI (optional) ---
+      AI_PROVIDER: none         # change to 'anthropic' to enable
+      # AI_API_KEY: sk-ant-...
+      # AI_MODEL: claude-haiku-4-5-20251001
+      # AI_MAX_EMAILS: "50"
+
+      # --- Schedule ---
+      SCHEDULE_HOUR: "8"
+      SCHEDULE_MIN: "0"
+      SCHEDULE_DAY: "*"
+
+    # --- Multi-mailbox example (uncomment and remove single mailbox vars above) ---
+    # environment:
+    #   MAILBOX_CONFIGS: |
+    #     [
+    #       {"imap_server":"imap.gmail.com","email_user":"a@gmail.com","email_pass":"app-password","spam_folder":"[Gmail]/Spam"},
+    #       {"imap_server":"imap.outlook.com","email_user":"b@outlook.com","email_pass":"secret","spam_folder":"Junk"}
+    #     ]
+    #   SMTP_HOST: smtp.gmail.com
+    #   SMTP_PORT: "587"
+    #   SMTP_USER: a@gmail.com
+    #   SMTP_PASS: app-password
+    #   DIGEST_TO: you@example.com
