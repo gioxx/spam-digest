@@ -471,12 +471,12 @@ tbody tr:nth-child(even) td { background: #f8fafc; }
 }
 .from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
 .from-addr { margin-top: 2px; color: #94a3b8; font-size: 10px; line-height: 1.25; }
-.td-subject { font-weight: 500; color: #1e293b; }
 .td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
+.td-subject { font-weight: 500; color: #1e293b; }
 .td-reason { font-size: 11px; color: #94a3b8; }
+.col-date { width: 12%; }
 .col-from { width: 24%; }
-.col-subject { width: 60%; }
-.col-date { width: 16%; }
+.col-subject { width: auto; }
 .col-label { width: 10%; }
 .col-reason { width: 14%; }
 .mailbox-block table { min-width: 0; }
@@ -519,11 +519,11 @@ def _email_row(em, show_ai):
 
     return (
         f"<tr>"
+        f"<td class='td-date col-date'>{date_short}</td>"
         f"<td class='td-from col-from' title='{from_title}'>"
         f"<span class='from-name'>{from_display}</span>{from_addr_html}"
         f"</td>"
         f"<td class='td-subject col-subject' title='{subject}'>{subject}</td>"
-        f"<td class='td-date col-date'>{date_short}</td>"
         f"{badge_td}{reason_td}"
         f"</tr>"
     )
@@ -532,24 +532,24 @@ def _email_row(em, show_ai):
 def _table_for_emails(emails, show_ai):
     if show_ai:
         colgroup = (
+            "<col class='col-date'>"
             "<col class='col-from'>"
             "<col class='col-subject'>"
-            "<col class='col-date'>"
             "<col class='col-label'>"
             "<col class='col-reason'>"
         )
         ai_header = "<th class='col-label'>Label</th><th class='col-reason'>Reason</th>"
     else:
         colgroup = (
+            "<col class='col-date'>"
             "<col class='col-from'>"
             "<col class='col-subject'>"
-            "<col class='col-date'>"
         )
         ai_header = ""
     rows = "".join(_email_row(em, show_ai) for em in emails)
     return (
         f"<table>{colgroup}"
-        f"<thead><tr><th class='col-from'>From</th><th class='col-subject'>Subject</th><th class='col-date'>Date</th>{ai_header}</tr></thead>"
+        f"<thead><tr><th class='col-date'>Date</th><th class='col-from'>From</th><th class='col-subject'>Subject</th>{ai_header}</tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
