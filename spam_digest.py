@@ -390,10 +390,10 @@ body {
 }
 a { color: #2563eb; text-decoration: none; }
 a:hover { text-decoration: underline; }
-.wrapper { max-width: 620px; margin: 0 auto; padding: 24px 16px; }
+.wrapper { max-width: 860px; margin: 0 auto; padding: 28px 18px; }
 header {
     background: #1e293b; border-radius: 12px;
-    padding: 20px 24px; margin-bottom: 16px; color: #f1f5f9;
+    padding: 22px 26px; margin-bottom: 16px; color: #f1f5f9;
 }
 header h1 { font-size: 20px; font-weight: 700; color: #f1f5f9; }
 header h1 em { font-style: normal; color: #60a5fa; }
@@ -432,19 +432,6 @@ header .meta { font-size: 12px; color: #94a3b8; margin-top: 4px; }
 .section-title.uncertain { color: #d97706; }
 .section-title.spam { color: #dc2626; }
 .section-title.noai { color: #64748b; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-thead th {
-    text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e8f0;
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: #64748b; font-weight: 600; background: #f8fafc;
-}
-tbody td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; background: #fff; }
-tbody tr:last-child td { border-bottom: none; }
-tbody tr:nth-child(even) td { background: #f8fafc; }
-.td-from { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; color: #64748b; }
-.td-subject { font-weight: 500; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
-.td-reason { font-size: 11px; color: #94a3b8; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge { display: inline-block; padding: 2px 7px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
 .badge-safe     { background: #dcfce7; color: #166534; }
 .badge-uncertain{ background: #fef9c3; color: #92400e; }
@@ -467,20 +454,46 @@ tbody tr:nth-child(even) td { background: #f8fafc; }
     padding: 16px 20px; margin-top: 16px; font-size: 13px; color: #64748b;
 }
 .tip-box strong { color: #1e293b; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+thead th {
+    text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e8f0;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #64748b; font-weight: 600; background: #f8fafc;
+}
+tbody td {
+    padding: 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; background: #fff;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) td { background: #f8fafc; }
+.td-from { font-family: monospace; font-size: 12px; color: #64748b; overflow: hidden; }
+.from-name, .from-addr, .td-subject, .td-reason {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
+}
+.from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
+.from-addr { margin-top: 2px; color: #94a3b8; font-size: 11px; }
+.td-subject { font-weight: 500; color: #1e293b; }
+.td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
+.td-reason { font-size: 11px; color: #94a3b8; }
+.col-from { width: 32%; }
+.col-subject { width: 52%; }
+.col-date { width: 16%; }
+.col-label { width: 10%; }
+.col-reason { width: 14%; }
+.mailbox-block table { min-width: 0; }
 footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 16px; }
 """
 
 
 
-def _display_name(from_str):
-    """Extract display name from 'Name <email>' format, falling back to raw string."""
-    import re as _re
-    m = _re.match(r'^(.*?)\s*<[^>]+>\s*$', from_str.strip())
-    if m:
-        name = m.group(1).strip().strip('"\'')
-        if name:
-            return name
-    return from_str
+def _split_from_header(from_str):
+    """Return a display name and the original sender address, if available."""
+    from_str = (from_str or "").strip()
+    display_name, addr = email_lib.utils.parseaddr(from_str)
+    display_name = (display_name or "").strip().strip('"\'')
+    addr = addr.strip()
+    if not display_name:
+        display_name = addr or from_str or "unknown"
+    return display_name, addr
 
 
 def _email_row(em, show_ai):
@@ -493,29 +506,50 @@ def _email_row(em, show_ai):
     reason = escape(em.get("ai_reason") or "")
     subject = escape(em.get("subject") or "(no subject)")
     from_raw = em.get("from") or "unknown"
-    from_display = escape(_display_name(from_raw))
+    from_display_name, from_addr = _split_from_header(from_raw)
+    from_display = escape(from_display_name)
+    from_addr_html = ""
+    if from_addr and from_addr != from_display_name:
+        from_addr_html = f"<span class='from-addr' title='{escape(from_addr)}'>{escape(from_addr)}</span>"
     from_title = escape(from_raw)
     date_full = em.get("date") or "\u2014"
     date_short = escape(date_full[:10])          # YYYY-MM-DD only
-    reason_td = f"<td class='td-reason' title='{reason}'>{reason}</td>" if show_ai else ""
-    badge_td = f"<td>{badge_html}</td>" if show_ai else ""
+    reason_td = f"<td class='td-reason col-reason' title='{reason}'>{reason}</td>" if show_ai else ""
+    badge_td = f"<td class='col-label'>{badge_html}</td>" if show_ai else ""
 
     return (
         f"<tr>"
-        f"<td class='td-from' title='{from_title}'>{from_display}</td>"
-        f"<td class='td-subject' title='{subject}'>{subject}</td>"
-        f"<td class='td-date'>{date_short}</td>"
+        f"<td class='td-from col-from' title='{from_title}'>"
+        f"<span class='from-name'>{from_display}</span>{from_addr_html}"
+        f"</td>"
+        f"<td class='td-subject col-subject' title='{subject}'>{subject}</td>"
+        f"<td class='td-date col-date'>{date_short}</td>"
         f"{badge_td}{reason_td}"
         f"</tr>"
     )
 
 
 def _table_for_emails(emails, show_ai):
-    ai_header = "<th>Label</th><th>Reason</th>" if show_ai else ""
+    if show_ai:
+        colgroup = (
+            "<col class='col-from'>"
+            "<col class='col-subject'>"
+            "<col class='col-date'>"
+            "<col class='col-label'>"
+            "<col class='col-reason'>"
+        )
+        ai_header = "<th class='col-label'>Label</th><th class='col-reason'>Reason</th>"
+    else:
+        colgroup = (
+            "<col class='col-from'>"
+            "<col class='col-subject'>"
+            "<col class='col-date'>"
+        )
+        ai_header = ""
     rows = "".join(_email_row(em, show_ai) for em in emails)
     return (
-        f"<table>"
-        f"<thead><tr><th>From</th><th>Subject</th><th>Date</th>{ai_header}</tr></thead>"
+        f"<table>{colgroup}"
+        f"<thead><tr><th class='col-from'>From</th><th class='col-subject'>Subject</th><th class='col-date'>Date</th>{ai_header}</tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
