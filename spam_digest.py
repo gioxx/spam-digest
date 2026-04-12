@@ -470,12 +470,12 @@ tbody tr:nth-child(even) td { background: #f8fafc; }
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
 }
 .from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
-.from-addr { margin-top: 2px; color: #94a3b8; font-size: 11px; }
+.from-addr { margin-top: 2px; color: #94a3b8; font-size: 10px; line-height: 1.25; }
 .td-subject { font-weight: 500; color: #1e293b; }
 .td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
 .td-reason { font-size: 11px; color: #94a3b8; }
-.col-from { width: 32%; }
-.col-subject { width: 52%; }
+.col-from { width: 24%; }
+.col-subject { width: 60%; }
 .col-date { width: 16%; }
 .col-label { width: 10%; }
 .col-reason { width: 14%; }
