@@ -66,6 +66,7 @@ def _build_single_mailbox_config():
         "email_user": email_user,
         "email_pass": os.getenv("EMAIL_PASS", ""),
         "email_address": os.getenv("EMAIL_ADDRESS") or email_user,
+        "digest_to": os.getenv("DIGEST_TO", "").strip(),
         "spam_folder": os.getenv("SPAM_FOLDER", DEFAULT_SPAM_FOLDER),
         "max_emails": _parse_int(os.getenv("MAX_EMAILS", str(DEFAULT_MAX_EMAILS)), DEFAULT_MAX_EMAILS, "MAX_EMAILS"),
     }
@@ -81,6 +82,7 @@ def _normalize_mailbox_config(raw, index):
         "email_user": email_user,
         "email_pass": _get_config_value(raw, "email_pass", "EMAIL_PASS", default=""),
         "email_address": _get_config_value(raw, "email_address", "EMAIL_ADDRESS", default=email_user),
+        "digest_to": (_get_config_value(raw, "digest_to") or "").strip(),
         "spam_folder": _get_config_value(raw, "spam_folder", "SPAM_FOLDER", default=DEFAULT_SPAM_FOLDER),
         "max_emails": _parse_int(
             _get_config_value(raw, "max_emails", "MAX_EMAILS", default=DEFAULT_MAX_EMAILS),
@@ -257,6 +259,7 @@ def fetch_spam_emails(cfg):
         "status": status,
         "error_message": error_msg,
         "email_address": email_address,
+        "digest_to": cfg.get("digest_to", ""),
         "spam_folder": spam_folder,
         "emails": mails,
         "count": len(mails),
@@ -678,6 +681,7 @@ def save_state(results, generated_at, total_count):
         "mailboxes": [
             {
                 "email_address": r["email_address"],
+                "digest_to": r.get("digest_to") or r["email_address"],
                 "spam_folder": r["spam_folder"],
                 "status": r["status"],
                 "count": r["count"],
@@ -733,6 +737,7 @@ def main():
                 "status": "error",
                 "error_message": "Missing required configuration fields.",
                 "email_address": cfg.get("email_address") or cfg.get("email_user") or "unknown",
+                "digest_to": cfg.get("digest_to", ""),
                 "spam_folder": cfg.get("spam_folder", DEFAULT_SPAM_FOLDER),
                 "emails": [],
                 "count": 0,
@@ -755,7 +760,7 @@ def main():
     classify_with_ai(results)
 
     for result in results:
-        to_address = result["email_address"]
+        to_address = result.get("digest_to") or result["email_address"]
         count = result["count"]
 
         if count == 0:

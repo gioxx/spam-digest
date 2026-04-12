@@ -73,6 +73,7 @@ Open `http://localhost:8080` for the status dashboard.
 | `SMTP_PORT` | `587` | `587` = STARTTLS, `465` = SSL. |
 | `SMTP_USER` | — | SMTP username. |
 | `SMTP_PASS` | — | SMTP password. |
+| `DIGEST_TO` | `EMAIL_USER` | Override digest recipient (single-mailbox). Per-mailbox: use `digest_to` field in `MAILBOX_CONFIGS`. |
 | `DIGEST_FROM` | `SMTP_USER` | Sender address. |
 | `SEND_IF_EMPTY` | `false` | Send digest even when no spam is found. |
 | `AI_PROVIDER` | `none` | `anthropic` to enable AI, `none` to disable. |

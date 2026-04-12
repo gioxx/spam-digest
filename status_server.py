@@ -30,8 +30,10 @@ def _get_mailbox_configs():
                     if not isinstance(cfg, dict):
                         continue
                     email_user = cfg.get("email_user") or cfg.get("EMAIL_USER") or ""
+                    email_address = cfg.get("email_address") or cfg.get("EMAIL_ADDRESS") or email_user
                     result.append({
-                        "email_address": cfg.get("email_address") or cfg.get("EMAIL_ADDRESS") or email_user,
+                        "email_address": email_address,
+                        "digest_to": (cfg.get("digest_to") or "").strip(),
                         "imap_server": cfg.get("imap_server") or cfg.get("IMAP_SERVER") or "",
                         "imap_port": cfg.get("imap_port") or cfg.get("IMAP_PORT") or 993,
                         "spam_folder": cfg.get("spam_folder") or cfg.get("SPAM_FOLDER") or os.getenv("SPAM_FOLDER", "Junk"),
@@ -44,6 +46,7 @@ def _get_mailbox_configs():
     email_user = os.getenv("EMAIL_USER", "")
     return [{
         "email_address": os.getenv("EMAIL_ADDRESS") or email_user,
+        "digest_to": os.getenv("DIGEST_TO", "").strip(),
         "imap_server": os.getenv("IMAP_SERVER", ""),
         "imap_port": os.getenv("IMAP_PORT", 993),
         "spam_folder": os.getenv("SPAM_FOLDER", "Junk"),
@@ -102,7 +105,7 @@ def _active_env_vars():
     candidates = (
         "IMAP_SERVER", "IMAP_PORT", "EMAIL_USER", "EMAIL_PASS",
         "EMAIL_ADDRESS", "SPAM_FOLDER", "MAX_EMAILS", "MAILBOX_CONFIGS",
-        "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_FROM",
+        "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_TO", "DIGEST_FROM",
         "AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS",
         "SEND_IF_EMPTY", "SCHEDULE_MIN", "SCHEDULE_HOUR", "SCHEDULE_DAY",
         "WEB_PORT", "TZ",
@@ -209,6 +212,7 @@ def _render_guide(active_vars):
         row("SMTP_PORT",      "587",           "SMTP port. 465 = SSL, 587 = STARTTLS."),
         row("SMTP_USER",      "\u2014",       "SMTP login username."),
         row("SMTP_PASS",      "\u2014",       "SMTP login password."),
+        row("DIGEST_TO",      "\u2014",        "Override recipient for single-mailbox mode. If unset, digest goes to EMAIL_USER."),
         row("DIGEST_FROM",    "SMTP_USER",     "Sender address in the digest email."),
         row("SEND_IF_EMPTY",  "false",         "Send digest even when no spam found. Default: skip."),
         section("AI Classification (Anthropic)"),
@@ -244,6 +248,12 @@ def _render_html():
     for mb in mailboxes:
         addr = escape(str(mb["email_address"]))
         addr_enc = urllib.parse.quote(str(mb["email_address"]), safe="")
+        digest_to = mb.get("digest_to", "").strip()
+        digest_to_cell = (
+            f"<span style='color:var(--accent)'>{escape(digest_to)}</span>"
+            if digest_to and digest_to != mb["email_address"]
+            else f"<span style='color:var(--muted)'>{addr}</span>"
+        )
         mb_rows += (
             f"<tr>"
             f"<td>{addr}</td>"
@@ -251,6 +261,7 @@ def _render_html():
             f"<td>{escape(str(mb['imap_port']))}</td>"
             f"<td><code>{escape(str(mb['spam_folder']))}</code></td>"
             f"<td>{escape(str(mb['max_emails']))}</td>"
+            f"<td>{digest_to_cell}</td>"
             f"<td><a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
             f" onclick=\"return confirm('Run digest for {addr} now?')\">\u25b6 Run</a></td>"
             f"</tr>"
@@ -327,7 +338,7 @@ def _render_html():
         f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'>{len(mailboxes)}</span></div>"
         f"</div></section></div>"
         f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p></div>"
-        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th>Port</th><th>Spam folder</th><th>Max emails</th><th></th></tr></thead>"
+        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th>Port</th><th>Spam folder</th><th>Max emails</th><th>Digest to</th><th></th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div></section>"
         f"{last_run_html}"
         f"{_render_guide(active_vars)}"
