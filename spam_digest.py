@@ -444,7 +444,6 @@ tbody tr:nth-child(even) td { background: #f8fafc; }
 .td-from { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; color: #64748b; }
 .td-subject { font-weight: 500; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
-.td-size { white-space: nowrap; color: #94a3b8; font-size: 12px; }
 .td-reason { font-size: 11px; color: #94a3b8; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge { display: inline-block; padding: 2px 7px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
 .badge-safe     { background: #dcfce7; color: #166534; }
@@ -472,12 +471,16 @@ footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; 
 """
 
 
-def _format_size(size_bytes):
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+def _display_name(from_str):
+    """Extract display name from 'Name <email>' format, falling back to raw string."""
+    import re as _re
+    m = _re.match(r'^(.*?)\s*<[^>]+>\s*$', from_str.strip())
+    if m:
+        name = m.group(1).strip().strip('"\'')
+        if name:
+            return name
+    return from_str
 
 
 def _email_row(em, show_ai):
@@ -489,30 +492,30 @@ def _email_row(em, show_ai):
 
     reason = escape(em.get("ai_reason") or "")
     subject = escape(em.get("subject") or "(no subject)")
-    from_addr = escape(em.get("from") or "unknown")
-    from_title = escape(em.get("from", ""))
-    date_str = escape(em.get("date") or "\u2014")
-    size_str = _format_size(em.get("size_bytes", 0))
+    from_raw = em.get("from") or "unknown"
+    from_display = escape(_display_name(from_raw))
+    from_title = escape(from_raw)
+    date_full = em.get("date") or "\u2014"
+    date_short = escape(date_full[:10])          # YYYY-MM-DD only
     reason_td = f"<td class='td-reason' title='{reason}'>{reason}</td>" if show_ai else ""
     badge_td = f"<td>{badge_html}</td>" if show_ai else ""
 
     return (
         f"<tr>"
-        f"<td class='td-from' title='{from_title}'>{from_addr}</td>"
+        f"<td class='td-from' title='{from_title}'>{from_display}</td>"
         f"<td class='td-subject' title='{subject}'>{subject}</td>"
-        f"<td class='td-date'>{date_str}</td>"
-        f"<td class='td-size'>{size_str}</td>"
+        f"<td class='td-date'>{date_short}</td>"
         f"{badge_td}{reason_td}"
         f"</tr>"
     )
 
 
 def _table_for_emails(emails, show_ai):
-    ai_header = "<th>Label</th><th>AI reason</th>" if show_ai else ""
+    ai_header = "<th>Label</th><th>Reason</th>" if show_ai else ""
     rows = "".join(_email_row(em, show_ai) for em in emails)
     return (
         f"<table>"
-        f"<thead><tr><th>From</th><th>Subject</th><th>Date</th><th>Size</th>{ai_header}</tr></thead>"
+        f"<thead><tr><th>From</th><th>Subject</th><th>Date</th>{ai_header}</tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
@@ -546,7 +549,7 @@ def build_html_digest(all_results, generated_at):
             f"</tr></table></div>"
         )
     else:
-        mb_label = "mailbox" if n_boxes == 1 else f"{n_boxes} mailboxes"
+        mb_label = "1 mailbox" if n_boxes == 1 else f"{n_boxes} mailboxes"
         summary_html = (
             f"<div class='summary-bar'>"
             f"<strong>{total_count} spam email{'s' if total_count != 1 else ''}</strong> found across {mb_label}."
