@@ -705,6 +705,8 @@ def main():
                         help="Fetch and classify emails but do not send the digest email.")
     parser.add_argument("--force-send", action="store_true",
                         help="Send the digest even if no spam emails were found.")
+    parser.add_argument("--only", metavar="EMAIL",
+                        help="Run only for the mailbox with this email address.")
     args = parser.parse_args()
 
     send_if_empty_env = os.getenv("SEND_IF_EMPTY", "false").strip().lower() in ("1", "true", "yes", "on")
@@ -713,6 +715,14 @@ def main():
     generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     mailbox_configs = load_mailbox_configs()
+    if args.only:
+        mailbox_configs = [
+            c for c in mailbox_configs
+            if (c.get("email_address") or c.get("email_user", "")).lower() == args.only.lower()
+        ]
+        if not mailbox_configs:
+            logging.error("No mailbox found matching --only %s. Aborting.", args.only)
+            sys.exit(1)
     logging.info("Loaded %d mailbox configuration(s).", len(mailbox_configs))
 
     results = []

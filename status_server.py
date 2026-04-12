@@ -12,6 +12,7 @@ import os
 import socketserver
 import subprocess
 import sys
+import urllib.parse
 from html import escape
 
 STATE_FILE = "/tmp/spam_digest_last_run.json"
@@ -241,13 +242,17 @@ def _render_html():
 
     mb_rows = ""
     for mb in mailboxes:
+        addr = escape(str(mb["email_address"]))
+        addr_enc = urllib.parse.quote(str(mb["email_address"]), safe="")
         mb_rows += (
             f"<tr>"
-            f"<td>{escape(str(mb['email_address']))}</td>"
+            f"<td>{addr}</td>"
             f"<td>{escape(str(mb['imap_server']))}</td>"
             f"<td>{escape(str(mb['imap_port']))}</td>"
             f"<td><code>{escape(str(mb['spam_folder']))}</code></td>"
             f"<td>{escape(str(mb['max_emails']))}</td>"
+            f"<td><a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
+            f" onclick=\"return confirm('Run digest for {addr} now?')\">\u25b6 Run</a></td>"
             f"</tr>"
         )
 
@@ -300,6 +305,7 @@ def _render_html():
         '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
         '<meta http-equiv="refresh" content="60">'
         '<title>Spam Digest</title>'
+        '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%233b82f6\' stroke-width=\'1.75\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\'/%3E%3C/svg%3E">'
         f'<style>{_CSS}</style></head><body>'
         f'<header><div class="logo">{_SHIELD_ICON}'
         f'<h1>Spam <em>Digest</em></h1>'
@@ -316,14 +322,12 @@ def _render_html():
         f"<span class='stat-value'><span class='dot {ai_dot}'></span> {ai_label}</span>"
         f"{'<span style=\'font-size:.72rem;color:var(--muted)\'>' + escape(ai_model) + '</span>' if ai_ok else ''}</div>"
         f"<div class='mini-box'><span class='stat-label'>SMTP / digest email</span>"
-        f"<span class='stat-value'><span class='dot {smtp_dot}'></span> {escape(smtp_label)}</span>"
-        f"{'<span style=\'font-size:.72rem;color:var(--muted)\'>' + escape(smtp_host) + '</span>' if smtp_ok else ''}</div>"
+        f"<span class='stat-value'><span class='dot {smtp_dot}'></span> {escape(smtp_label)}</span></div>"
         f"<div class='mini-box'><span class='stat-label'>Send if empty</span><span class='stat-value'>{'Yes' if send_if_empty else 'No (skip)'}</span></div>"
-        f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'><span class='badge badge-count'>{len(mailboxes)}</span></span></div>"
+        f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'>{len(mailboxes)}</span></div>"
         f"</div></section></div>"
-        f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p>"
-        f"<a class='btn-action' href='/action/run-now' onclick=\"return confirm('Run the spam digest now?')\">\u25b6 Run now</a></div>"
-        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th>Port</th><th>Spam folder</th><th>Max emails</th></tr></thead>"
+        f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p></div>"
+        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th>Port</th><th>Spam folder</th><th>Max emails</th><th></th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div></section>"
         f"{last_run_html}"
         f"{_render_guide(active_vars)}"
@@ -363,6 +367,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/action/run-now":
             ok, out = _run_digest(["--force-send"])
             print(f"[action/run-now] ok={ok} | {out[:200]}", flush=True)
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+        elif self.path.startswith("/action/run-mailbox"):
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            email = params.get("email", [""])[0]
+            if email:
+                ok, out = _run_digest(["--force-send", "--only", email])
+                print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
