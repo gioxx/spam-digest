@@ -384,74 +384,91 @@ def classify_with_ai(all_mailbox_results):
 _EMAIL_CSS = """\
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-    background: #0f172a; color: #e2e8f0;
+    background: #f1f5f9; color: #1e293b;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     font-size: 15px; line-height: 1.6;
 }
-a { color: #3b82f6; text-decoration: none; }
+a { color: #2563eb; text-decoration: none; }
 a:hover { text-decoration: underline; }
-.wrapper { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+.wrapper { max-width: 620px; margin: 0 auto; padding: 24px 16px; }
 header {
-    background: #1e293b; border: 1px solid #334155; border-radius: 12px;
-    padding: 20px 24px; display: flex; align-items: center; gap: 14px; margin-bottom: 20px;
+    background: #1e293b; border-radius: 12px;
+    padding: 20px 24px; margin-bottom: 16px; color: #f1f5f9;
 }
-header h1 { font-size: 18px; font-weight: 700; }
-header h1 em { font-style: normal; color: #3b82f6; }
-header .meta { font-size: 12px; color: #94a3b8; margin-top: 2px; }
-.summary-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 12px; margin-bottom: 20px;
+header h1 { font-size: 20px; font-weight: 700; color: #f1f5f9; }
+header h1 em { font-style: normal; color: #60a5fa; }
+header .meta { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+.clean-banner {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 16px; color: #166534; font-size: 14px; font-weight: 500;
 }
-.summary-box { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 14px 18px; }
-.summary-box .label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
-.summary-box .value { font-size: 22px; font-weight: 700; margin-top: 2px; }
-.summary-box .value.safe { color: #22c55e; }
-.summary-box .value.uncertain { color: #fbbf24; }
-.summary-box .value.spam { color: #f87171; }
-.summary-box .value.total { color: #3b82f6; }
-.section { margin-bottom: 24px; }
+.summary-bar {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 12px 18px; margin-bottom: 16px; font-size: 13px; color: #475569;
+}
+.summary-bar strong { color: #1e293b; }
+.ai-summary {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 0; margin-bottom: 16px; overflow: hidden;
+}
+.ai-summary table { width: 100%; border-collapse: collapse; }
+.ai-summary td {
+    padding: 12px 16px; text-align: center; border-right: 1px solid #e2e8f0;
+    font-size: 13px;
+}
+.ai-summary td:last-child { border-right: none; }
+.ai-summary .ai-val { font-size: 22px; font-weight: 700; display: block; }
+.ai-summary .ai-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; margin-top: 2px; }
+.ai-val.total { color: #2563eb; }
+.ai-val.safe { color: #16a34a; }
+.ai-val.uncertain { color: #d97706; }
+.ai-val.spam-c { color: #dc2626; }
+.section { margin-bottom: 20px; }
 .section-title {
     font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700;
-    margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px;
 }
-.section-title.safe { color: #22c55e; }
-.section-title.uncertain { color: #fbbf24; }
-.section-title.spam { color: #f87171; }
-.section-title.noai { color: #94a3b8; }
+.section-title.safe { color: #16a34a; }
+.section-title.uncertain { color: #d97706; }
+.section-title.spam { color: #dc2626; }
+.section-title.noai { color: #64748b; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 thead th {
-    text-align: left; padding: 8px 10px; border-bottom: 1px solid #334155;
+    text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e8f0;
     font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: #94a3b8; font-weight: 600; background: #1e293b;
+    color: #64748b; font-weight: 600; background: #f8fafc;
 }
-tbody td { padding: 9px 10px; border-bottom: 1px solid #1e293b; vertical-align: middle; background: #162032; }
+tbody td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; background: #fff; }
 tbody tr:last-child td { border-bottom: none; }
-.td-from { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; color: #94a3b8; }
-.td-subject { font-weight: 500; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.td-date { white-space: nowrap; color: #64748b; font-size: 12px; }
-.td-size { white-space: nowrap; color: #64748b; font-size: 12px; }
-.td-reason { font-size: 11px; color: #94a3b8; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
-.badge-safe     { background: #14532d33; color: #22c55e; border: 1px solid #166534; }
-.badge-uncertain{ background: #78350f33; color: #fbbf24; border: 1px solid #92400e; }
-.badge-spam     { background: #7f1d1d33; color: #f87171; border: 1px solid #991b1b; }
+tbody tr:nth-child(even) td { background: #f8fafc; }
+.td-from { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; color: #64748b; }
+.td-subject { font-weight: 500; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
+.td-size { white-space: nowrap; color: #94a3b8; font-size: 12px; }
+.td-reason { font-size: 11px; color: #94a3b8; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { display: inline-block; padding: 2px 7px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
+.badge-safe     { background: #dcfce7; color: #166534; }
+.badge-uncertain{ background: #fef9c3; color: #92400e; }
+.badge-spam     { background: #fee2e2; color: #991b1b; }
+.mailbox-block { margin-bottom: 20px; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }
 .mailbox-header {
-    background: #1e293b; border: 1px solid #334155; border-radius: 10px 10px 0 0;
-    padding: 10px 14px; font-size: 13px; font-weight: 600;
-    display: flex; align-items: center; gap: 8px;
+    background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+    padding: 10px 14px; font-size: 13px; font-weight: 600; color: #1e293b;
 }
-.mailbox-block { margin-bottom: 24px; border-radius: 10px; overflow: hidden; border: 1px solid #334155; }
-.mailbox-table-wrap { border-radius: 0 0 10px 10px; overflow: hidden; }
+.mailbox-empty {
+    background: #fff; padding: 12px 14px; font-size: 13px; color: #94a3b8;
+}
+.mailbox-table-wrap { overflow: hidden; }
 .error-box {
-    background: #7f1d1d22; border: 1px solid #991b1b; border-radius: 10px;
-    padding: 14px 18px; color: #f87171; font-size: 13px; margin-bottom: 16px;
+    background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px;
+    padding: 14px 18px; color: #991b1b; font-size: 13px; margin-bottom: 16px;
 }
 .tip-box {
-    background: #1e293b; border: 1px solid #334155; border-radius: 10px;
-    padding: 16px 20px; margin-top: 20px; font-size: 13px; color: #94a3b8;
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 16px 20px; margin-top: 16px; font-size: 13px; color: #64748b;
 }
-.tip-box strong { color: #e2e8f0; }
-footer { margin-top: 32px; text-align: center; font-size: 12px; color: #475569; border-top: 1px solid #1e293b; padding-top: 16px; }
+.tip-box strong { color: #1e293b; }
+footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 16px; }
 """
 
 
@@ -512,20 +529,27 @@ def build_html_digest(all_results, generated_at):
     uncertain_count = sum(sum(1 for em in r["emails"] if em.get("ai_label") == "uncertain") for r in all_results)
     spam_count = sum(sum(1 for em in r["emails"] if em.get("ai_label") == "spam") for r in all_results)
 
-    if show_ai:
+    n_boxes = len(all_results)
+    if total_count == 0:
         summary_html = (
-            f"<div class='summary-grid'>"
-            f"<div class='summary-box'><div class='label'>Total spam</div><div class='value total'>{total_count}</div></div>"
-            f"<div class='summary-box'><div class='label'>Probably safe</div><div class='value safe'>{safe_count}</div></div>"
-            f"<div class='summary-box'><div class='label'>Uncertain</div><div class='value uncertain'>{uncertain_count}</div></div>"
-            f"<div class='summary-box'><div class='label'>Confirmed spam</div><div class='value spam'>{spam_count}</div></div>"
+            f"<div class='clean-banner'>"
+            f"\u2705 No spam found in {'this mailbox' if n_boxes == 1 else f'any of the {n_boxes} mailboxes scanned'}."
             f"</div>"
         )
-    else:
+    elif show_ai:
         summary_html = (
-            f"<div class='summary-grid'>"
-            f"<div class='summary-box'><div class='label'>Total spam emails</div><div class='value total'>{total_count}</div></div>"
-            f"<div class='summary-box'><div class='label'>Mailboxes scanned</div><div class='value total'>{len(all_results)}</div></div>"
+            f"<div class='ai-summary'><table><tr>"
+            f"<td><span class='ai-val total'>{total_count}</span><span class='ai-lbl'>Total</span></td>"
+            f"<td><span class='ai-val safe'>{safe_count}</span><span class='ai-lbl'>Probably safe</span></td>"
+            f"<td><span class='ai-val uncertain'>{uncertain_count}</span><span class='ai-lbl'>Uncertain</span></td>"
+            f"<td><span class='ai-val spam-c'>{spam_count}</span><span class='ai-lbl'>Confirmed spam</span></td>"
+            f"</tr></table></div>"
+        )
+    else:
+        mb_label = "mailbox" if n_boxes == 1 else f"{n_boxes} mailboxes"
+        summary_html = (
+            f"<div class='summary-bar'>"
+            f"<strong>{total_count} spam email{'s' if total_count != 1 else ''}</strong> found across {mb_label}."
             f"</div>"
         )
 
@@ -544,10 +568,10 @@ def build_html_digest(all_results, generated_at):
 
         if count == 0:
             mailbox_blocks += (
-                f"<div class='mailbox-block'><div class='mailbox-header'>\U0001f4ed {addr}"
-                f" &nbsp;\u00b7&nbsp; <span style='color:#475569'>{folder}</span>"
-                f" &nbsp;<span style='color:#475569;font-weight:400;font-size:12px'>\u2014 no spam emails found</span>"
-                f"</div></div>"
+                f"<div class='mailbox-block'>"
+                f"<div class='mailbox-header'>\U0001f4eb {addr} &nbsp;&middot;&nbsp; {folder}</div>"
+                f"<div class='mailbox-empty'>No spam emails found.</div>"
+                f"</div>"
             )
             continue
 
@@ -588,22 +612,22 @@ def build_html_digest(all_results, generated_at):
 
         mailbox_blocks += (
             f"<div class='mailbox-block'>"
-            f"<div class='mailbox-header'>\U0001f4ec <strong>{addr}</strong>"
-            f" &nbsp;\u00b7&nbsp; <span style='color:#475569'>{folder}</span>"
-            f" &nbsp;\u00b7&nbsp; <span style='color:#3b82f6;font-size:12px'>{count} email(s)</span></div>"
+            f"<div class='mailbox-header'>\U0001f4ec {addr}"
+            f" &nbsp;&middot;&nbsp; {folder}"
+            f" &nbsp;&middot;&nbsp; <span style='color:#2563eb;font-weight:400'>{count} email(s)</span></div>"
             f"<div class='mailbox-table-wrap'>{inner}</div></div>"
         )
 
     ai_note = (
-        "<br>AI classification: <strong style='color:#3b82f6'>Anthropic Claude</strong> \u00b7 "
-        f"model: <code>{escape(os.getenv('AI_MODEL', 'claude-haiku-4-5-20251001'))}</code>"
-        if show_ai else "<br>AI classification: disabled"
+        " &nbsp;&middot;&nbsp; AI: <strong style='color:#60a5fa'>Anthropic Claude</strong> "
+        f"({escape(os.getenv('AI_MODEL', 'claude-haiku-4-5-20251001'))})"
+        if show_ai else " &nbsp;&middot;&nbsp; AI: disabled"
     )
 
     tip_html = (
         "<div class='tip-box'><strong>How to rescue an email from spam:</strong> "
         "Connect to your mailbox with any IMAP client, open the spam/junk folder, "
-        "select the email and move it to your Inbox (or mark it as \"Not Spam\"). "
+        "select the email and move it to your Inbox (or mark it as \u201cNot Spam\u201d). "
         "This also trains your mail server's spam filter.</div>"
     )
 
@@ -613,10 +637,12 @@ def build_html_digest(all_results, generated_at):
         f'<title>Spam Digest \u2014 {escape(generated_at)}</title>'
         f'<style>{_EMAIL_CSS}</style></head><body>'
         f"<div class='wrapper'>"
-        f"<header><div><h1>\U0001f6e1 Spam <em>Digest</em></h1>"
-        f"<div class='meta'>Generated: {escape(generated_at)}{ai_note}</div></div></header>"
+        f"<header>"
+        f"<h1>\U0001f6e1 Spam <em>Digest</em></h1>"
+        f"<div class='meta'>Generated: {escape(generated_at)}{ai_note}</div>"
+        f"</header>"
         f"{summary_html}{mailbox_blocks}{tip_html}"
-        f"<footer>spam-digest v{APP_VERSION} &nbsp;\u00b7&nbsp; "
+        f"<footer>spam-digest v{APP_VERSION} &nbsp;&middot;&nbsp; "
         f'<a href="https://github.com/gioxx/spam-digest">github.com/gioxx/spam-digest</a></footer>'
         f"</div></body></html>"
     )
