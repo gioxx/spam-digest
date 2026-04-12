@@ -623,25 +623,24 @@ def build_html_digest(all_results, generated_at):
 # SMTP send
 # ---------------------------------------------------------------------------
 
-def send_digest_email(html_body, subject, generated_at):
+def send_digest_email(html_body, subject, generated_at, to_address):
     smtp_host = os.getenv("SMTP_HOST", "").strip()
     smtp_port = _parse_int(os.getenv("SMTP_PORT", "587"), 587, "SMTP_PORT")
     smtp_user = os.getenv("SMTP_USER", "").strip()
     smtp_pass = os.getenv("SMTP_PASS", "").strip()
-    digest_to = os.getenv("DIGEST_TO", "").strip()
     digest_from = os.getenv("DIGEST_FROM", smtp_user).strip()
 
     if not smtp_host:
         logging.error("SMTP_HOST is not set. Cannot send digest email.")
         return False
-    if not digest_to:
-        logging.error("DIGEST_TO is not set. Cannot send digest email.")
+    if not to_address:
+        logging.error("No recipient address for digest email.")
         return False
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = digest_from or smtp_user
-    msg["To"] = digest_to
+    msg["To"] = to_address
     msg["X-Mailer"] = f"spam-digest/{APP_VERSION}"
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
@@ -651,7 +650,7 @@ def send_digest_email(html_body, subject, generated_at):
             with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
                 if smtp_user and smtp_pass:
                     server.login(smtp_user, smtp_pass)
-                server.sendmail(msg["From"], [digest_to], msg.as_bytes())
+                server.sendmail(msg["From"], [to_address], msg.as_bytes())
         else:
             with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
                 server.ehlo()
@@ -659,8 +658,8 @@ def send_digest_email(html_body, subject, generated_at):
                 server.ehlo()
                 if smtp_user and smtp_pass:
                     server.login(smtp_user, smtp_pass)
-                server.sendmail(msg["From"], [digest_to], msg.as_bytes())
-        logging.info("Digest email sent to %s.", digest_to)
+                server.sendmail(msg["From"], [to_address], msg.as_bytes())
+        logging.info("Digest email sent to %s.", to_address)
         return True
     except Exception as e:
         logging.error("Failed to send digest email: %s", e)
@@ -671,11 +670,11 @@ def send_digest_email(html_body, subject, generated_at):
 # State persistence
 # ---------------------------------------------------------------------------
 
-def save_state(results, generated_at, sent, total_count):
+def save_state(results, generated_at, total_count):
     state = {
         "timestamp": generated_at,
         "total_count": total_count,
-        "sent": sent,
+        "sent": any(r.get("sent") for r in results),
         "mailboxes": [
             {
                 "email_address": r["email_address"],
@@ -684,6 +683,7 @@ def save_state(results, generated_at, sent, total_count):
                 "count": r["count"],
                 "duration_seconds": round(r["duration_seconds"], 3),
                 "error_message": r.get("error_message"),
+                "sent": r.get("sent", False),
             }
             for r in results
         ],
@@ -727,9 +727,11 @@ def main():
                 "emails": [],
                 "count": 0,
                 "duration_seconds": 0,
+                "sent": False,
             })
             continue
         result = fetch_spam_emails(cfg)
+        result["sent"] = False
         results.append(result)
 
     total_count = sum(r["count"] for r in results)
@@ -737,31 +739,38 @@ def main():
 
     if total_count == 0 and not send_if_empty:
         logging.info("No spam emails found and SEND_IF_EMPTY is false. Digest will not be sent.")
-        save_state(results, generated_at, sent=False, total_count=0)
+        save_state(results, generated_at, total_count=0)
         sys.exit(0)
 
     classify_with_ai(results)
-    html_body = build_html_digest(results, generated_at)
 
-    if total_count == 0:
-        subject = f"Spam Digest \u2014 {generated_at} \u2014 No spam found"
-    else:
-        subject = f"Spam Digest \u2014 {generated_at} \u2014 {total_count} email(s) in spam"
+    for result in results:
+        to_address = result["email_address"]
+        count = result["count"]
 
-    sent = False
-    if args.dry_run:
-        logging.info("Dry-run mode: digest built but not sent. HTML size: %d bytes.", len(html_body))
-        dry_run_path = "/tmp/spam_digest_dry_run.html"
-        try:
-            with open(dry_run_path, "w") as f:
-                f.write(html_body)
-            logging.info("Dry-run HTML saved to %s.", dry_run_path)
-        except OSError:
-            pass
-    else:
-        sent = send_digest_email(html_body, subject, generated_at)
+        if count == 0:
+            subject = f"Spam Digest \u2014 {generated_at} \u2014 No spam found"
+        else:
+            subject = f"Spam Digest \u2014 {generated_at} \u2014 {count} email(s) in spam"
 
-    save_state(results, generated_at, sent=sent, total_count=total_count)
+        html_body = build_html_digest([result], generated_at)
+
+        if args.dry_run:
+            logging.info(
+                "Dry-run mode: digest for %s built but not sent. HTML size: %d bytes.",
+                to_address, len(html_body),
+            )
+            dry_run_path = f"/tmp/spam_digest_dry_run_{to_address}.html"
+            try:
+                with open(dry_run_path, "w") as f:
+                    f.write(html_body)
+                logging.info("Dry-run HTML saved to %s.", dry_run_path)
+            except OSError:
+                pass
+        else:
+            result["sent"] = send_digest_email(html_body, subject, generated_at, to_address)
+
+    save_state(results, generated_at, total_count=total_count)
 
 
 if __name__ == "__main__":

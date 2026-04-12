@@ -22,7 +22,6 @@ services:
       SMTP_PORT: "587"
       SMTP_USER: you@example.com
       SMTP_PASS: your-smtp-password
-      DIGEST_TO: you@example.com
       SEND_IF_EMPTY: "false"
 
       # --- AI (optional) ---
@@ -47,4 +46,3 @@ services:
     #   SMTP_PORT: "587"
     #   SMTP_USER: a@gmail.com
     #   SMTP_PASS: app-password
-    #   DIGEST_TO: you@example.com

@@ -44,7 +44,6 @@ services:
       SMTP_HOST: smtp.example.com
       SMTP_USER: you@example.com
       SMTP_PASS: your-smtp-password
-      DIGEST_TO: you@example.com
 ```
 
 Copy `.env.example` to `.env`, fill in your values, then:
@@ -74,7 +73,6 @@ Open `http://localhost:8080` for the status dashboard.
 | `SMTP_PORT` | `587` | `587` = STARTTLS, `465` = SSL. |
 | `SMTP_USER` | — | SMTP username. |
 | `SMTP_PASS` | — | SMTP password. |
-| `DIGEST_TO` | — | Digest recipient email. **Required**. |
 | `DIGEST_FROM` | `SMTP_USER` | Sender address. |
 | `SEND_IF_EMPTY` | `false` | Send digest even when no spam is found. |
 | `AI_PROVIDER` | `none` | `anthropic` to enable AI, `none` to disable. |

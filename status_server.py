@@ -84,10 +84,9 @@ def _smtp_status():
     host = os.getenv("SMTP_HOST", "")
     port = os.getenv("SMTP_PORT", "587")
     user = os.getenv("SMTP_USER", "")
-    digest_to = os.getenv("DIGEST_TO", "")
     send_if_empty = os.getenv("SEND_IF_EMPTY", "false").strip().lower() in ("1", "true", "yes", "on")
-    configured = bool(host and digest_to)
-    return configured, host, port, user, digest_to, send_if_empty
+    configured = bool(host)
+    return configured, host, port, user, send_if_empty
 
 
 def _get_last_run():
@@ -102,7 +101,7 @@ def _active_env_vars():
     candidates = (
         "IMAP_SERVER", "IMAP_PORT", "EMAIL_USER", "EMAIL_PASS",
         "EMAIL_ADDRESS", "SPAM_FOLDER", "MAX_EMAILS", "MAILBOX_CONFIGS",
-        "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_TO", "DIGEST_FROM",
+        "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_FROM",
         "AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS",
         "SEND_IF_EMPTY", "SCHEDULE_MIN", "SCHEDULE_HOUR", "SCHEDULE_DAY",
         "WEB_PORT", "TZ",
@@ -209,7 +208,6 @@ def _render_guide(active_vars):
         row("SMTP_PORT",      "587",           "SMTP port. 465 = SSL, 587 = STARTTLS."),
         row("SMTP_USER",      "\u2014",       "SMTP login username."),
         row("SMTP_PASS",      "\u2014",       "SMTP login password."),
-        row("DIGEST_TO",      "\u2014",       "<strong>Required</strong>. Recipient email address."),
         row("DIGEST_FROM",    "SMTP_USER",     "Sender address in the digest email."),
         row("SEND_IF_EMPTY",  "false",         "Send digest even when no spam found. Default: skip."),
         section("AI Classification (Anthropic)"),
@@ -238,7 +236,7 @@ def _render_html():
     cron_expr, schedule_desc = _get_schedule()
     last_run = _get_last_run()
     ai_ok, ai_detail, ai_model, ai_max = _ai_status()
-    smtp_ok, smtp_host, smtp_port, smtp_user, digest_to, send_if_empty = _smtp_status()
+    smtp_ok, smtp_host, smtp_port, smtp_user, send_if_empty = _smtp_status()
     active_vars = _active_env_vars()
 
     mb_rows = ""
@@ -263,6 +261,8 @@ def _render_html():
             st = r.get("status", "unknown")
             badge = "badge-ok" if st == "success" else "badge-err"
             err = r.get("error_message") or ""
+            r_sent = r.get("sent", False)
+            sent_cell = "<span class='badge badge-ok'>sent</span>" if r_sent else "<span class='badge badge-muted'>not sent</span>"
             run_rows += (
                 f"<tr>"
                 f"<td>{escape(str(r.get('email_address', '')))}</td>"
@@ -270,6 +270,7 @@ def _render_html():
                 f"<td><span class='badge {badge}'>{escape(st)}</span></td>"
                 f"<td>{r.get('count', 0)}</td>"
                 f"<td>{float(r.get('duration_seconds', 0)):.2f}s</td>"
+                f"<td>{sent_cell}</td>"
                 f"<td class='{'cell-err' if err else 'cell-muted'}'>{escape(err) if err else '\u2014'}</td>"
                 f"</tr>"
             )
@@ -280,7 +281,7 @@ def _render_html():
             f"<span style='font-size:.78rem;color:var(--muted)'>{total} spam email(s)</span>"
             f"{sent_badge}</div></div>"
             f"<div class='table-wrap'><table>"
-            f"<thead><tr><th>Mailbox</th><th>Folder</th><th>Status</th><th>Spam found</th><th>Duration</th><th>Error</th></tr></thead>"
+            f"<thead><tr><th>Mailbox</th><th>Folder</th><th>Status</th><th>Spam found</th><th>Duration</th><th>Digest sent</th><th>Error</th></tr></thead>"
             f"<tbody>{run_rows}</tbody></table></div></section>"
         )
     else:
@@ -316,7 +317,7 @@ def _render_html():
         f"{'<span style=\'font-size:.72rem;color:var(--muted)\'>' + escape(ai_model) + '</span>' if ai_ok else ''}</div>"
         f"<div class='mini-box'><span class='stat-label'>SMTP / digest email</span>"
         f"<span class='stat-value'><span class='dot {smtp_dot}'></span> {escape(smtp_label)}</span>"
-        f"{'<span style=\'font-size:.72rem;color:var(--muted)\'>To: ' + escape(digest_to) + '</span>' if smtp_ok else ''}</div>"
+        f"{'<span style=\'font-size:.72rem;color:var(--muted)\'>' + escape(smtp_host) + '</span>' if smtp_ok else ''}</div>"
         f"<div class='mini-box'><span class='stat-label'>Send if empty</span><span class='stat-value'>{'Yes' if send_if_empty else 'No (skip)'}</span></div>"
         f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'><span class='badge badge-count'>{len(mailboxes)}</span></span></div>"
         f"</div></section></div>"
