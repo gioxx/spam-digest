@@ -371,7 +371,7 @@ def _render_html():
     )
 
 
-def _run_digest(action, email=None):
+def _run_digest(action, email=None, allowed_emails=None):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spam_digest.py")
     base_cmd = [sys.executable, script]
 
@@ -382,6 +382,8 @@ def _run_digest(action, email=None):
     elif action == "mailbox":
         if not (email and _EMAIL_RE.match(email)):
             return False, "invalid email"
+        if allowed_emails is None or email not in allowed_emails:
+            return False, "unconfigured email"
         cmd = base_cmd + ["--force-send", "--only", email]
     else:
         return False, "invalid action"
@@ -415,7 +417,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             email = params.get("email", [""])[0]
             configured = {mb["email_address"] for mb in _get_mailbox_configs()}
             if email and _EMAIL_RE.match(email) and email in configured:
-                ok, out = _run_digest("mailbox", email=email)
+                ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
                 print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)
             self.send_header("Location", "/")
