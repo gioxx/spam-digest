@@ -52,7 +52,8 @@ Copy `.env.example` to `.env`, fill in your values, then:
 docker compose up -d
 ```
 
-The digest runs immediately on startup, then every day at 08:00 (configurable).
+The digest runs every day at 08:00 (configurable via `SCHEDULE_HOUR` / `SCHEDULE_MIN`).
+It does **not** run at container startup by default — set `RUN_ON_START=true` to enable that.
 Open `http://localhost:8080` for the status dashboard.
 
 ---
@@ -83,6 +84,7 @@ Open `http://localhost:8080` for the status dashboard.
 | `SCHEDULE_MIN` | `0` | Cron minute. |
 | `SCHEDULE_HOUR` | `8` | Cron hour. |
 | `SCHEDULE_DAY` | `*` | Cron weekday. `*` = every day. `0`=Sun … `6`=Sat. |
+| `RUN_ON_START` | `false` | Run the digest immediately on container start. Default: rely on cron schedule only. |
 | `WEB_PORT` | `8080` | Dashboard port. |
 | `TZ` | `UTC` | Container timezone (e.g. `Europe/Rome`). |
 
