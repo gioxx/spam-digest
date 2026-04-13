@@ -37,7 +37,10 @@ crontab /tmp/cronjob
 export WEB_PORT
 /usr/local/bin/python3 /app/status_server.py >> /proc/1/fd/1 2>&1 &
 
-# Run immediately on container start.
-/usr/local/bin/python3 /app/spam_digest.py
+# Run immediately on container start only if RUN_ON_START=true.
+: "${RUN_ON_START:=false}"
+if [ "$RUN_ON_START" = "true" ]; then
+    /usr/local/bin/python3 /app/spam_digest.py
+fi
 
 cron -f
