@@ -35,6 +35,7 @@ services:
       SCHEDULE_HOUR: "8"
       SCHEDULE_MIN: "0"
       SCHEDULE_DAY: "*"
+      RUN_ON_START: "false"   # set to "true" to also run at container startup
 
     # --- Multi-mailbox example (uncomment and remove single mailbox vars above) ---
     # environment:

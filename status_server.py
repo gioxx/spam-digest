@@ -17,13 +17,9 @@ import urllib.parse
 from html import escape
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
-_MAILBOX_ALLOWLIST = {
-    "ops": "ops@example.com",
-    "alerts": "alerts@example.com",
-}
 
 STATE_FILE = "/tmp/spam_digest_last_run.json"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 
 
 def _get_mailbox_configs():
@@ -115,7 +111,7 @@ def _active_env_vars():
         "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_TO", "DIGEST_FROM",
         "AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS",
         "SEND_IF_EMPTY", "SCHEDULE_MIN", "SCHEDULE_HOUR", "SCHEDULE_DAY",
-        "WEB_PORT", "TZ",
+        "WEB_PORT", "RUN_ON_START", "TZ",
     )
     return {k for k in candidates if os.getenv(k)}
 
@@ -244,8 +240,9 @@ def _render_guide(active_vars):
         row("SCHEDULE_HOUR",  "8",  "Cron hour (0\u201323)."),
         row("SCHEDULE_DAY",   "*",  "Cron weekday. <code>*</code> = every day. 0=Sun \u2026 6=Sat."),
         section("Web dashboard / misc"),
-        row("WEB_PORT",       "8080", "Port for the status dashboard."),
-        row("TZ",             "UTC",  "Container timezone. Example: <code>Europe/Rome</code>."),
+        row("WEB_PORT",       "8080",  "Port for the status dashboard."),
+        row("RUN_ON_START",   "false", "Run the digest immediately on container start. Default: <code>false</code> (rely on cron schedule)."),
+        row("TZ",             "UTC",   "Container timezone. Example: <code>Europe/Rome</code>."),
     ])
     return (
         f"<details><summary>Environment Variables Reference</summary>"
@@ -415,11 +412,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/action/run-mailbox"):
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            mailbox = params.get("mailbox", [""])[0]
-            email = _MAILBOX_ALLOWLIST.get(mailbox, "")
-            if email:
+            email = params.get("email", [""])[0]
+            configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+            if email and _EMAIL_RE.match(email) and email in configured:
                 ok, out = _run_digest("mailbox", email=email)
-                print(f"[action/run-mailbox] mailbox={mailbox} email={email} ok={ok} | {out[:200]}", flush=True)
+                print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
