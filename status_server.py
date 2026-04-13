@@ -370,9 +370,21 @@ def _render_html():
     )
 
 
-def _run_digest(args=None):
+def _run_digest(action, email=None):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spam_digest.py")
-    cmd = [sys.executable, script] + (args or [])
+    base_cmd = [sys.executable, script]
+
+    if action == "force_send":
+        cmd = base_cmd + ["--force-send"]
+    elif action == "dry_run":
+        cmd = base_cmd + ["--dry-run"]
+    elif action == "mailbox":
+        if not (email and _EMAIL_RE.match(email)):
+            return False, "invalid email"
+        cmd = base_cmd + ["--force-send", "--only", email]
+    else:
+        return False, "invalid action"
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         return result.returncode == 0, (result.stdout + result.stderr).strip()
@@ -391,7 +403,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif self.path == "/action/run-now":
-            ok, out = _run_digest(["--force-send"])
+            ok, out = _run_digest("force_send")
             print(f"[action/run-now] ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)
             self.send_header("Location", "/")
@@ -401,13 +413,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(qs)
             email = params.get("email", [""])[0]
             if email and _EMAIL_RE.match(email):
-                ok, out = _run_digest(["--force-send", "--only", email])
+                ok, out = _run_digest("mailbox", email=email)
                 print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
         elif self.path == "/action/dry-run":
-            ok, out = _run_digest(["--dry-run"])
+            ok, out = _run_digest("dry_run")
             print(f"[action/dry-run] ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)
             self.send_header("Location", "/")
