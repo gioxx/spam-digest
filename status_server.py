@@ -9,14 +9,17 @@ import datetime
 import http.server
 import json
 import os
+import re
 import socketserver
 import subprocess
 import sys
 import urllib.parse
 from html import escape
 
+_EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
+
 STATE_FILE = "/tmp/spam_digest_last_run.json"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 
 def _get_mailbox_configs():
@@ -180,6 +183,18 @@ details[open] summary { border-bottom: 1px solid var(--border); }
 .guide-section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text); font-weight: 700; padding: 0.7rem 0.85rem 0.4rem 1rem; border-top: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--surface2); }
 .guide-section-label:first-child { border-top: none; }
 footer { text-align: center; padding: 1.5rem; font-size: 0.75rem; color: var(--muted); border-top: 1px solid var(--border); margin-top: 1rem; }
+/* ── responsive ── */
+main > * { min-width: 0; }
+.grid-2 > * { min-width: 0; }
+@media (max-width: 640px) {
+    header { padding: 0.75rem 1rem; }
+    .meta { font-size: 0.72rem; }
+    main { padding: 1rem 0.75rem; gap: 0.875rem; }
+    .card { padding: 1rem; }
+    .mini-grid { grid-template-columns: 1fr; }
+    #totop { bottom: 1rem; right: 1rem; width: 2.2rem; height: 2.2rem; font-size: 1rem; }
+    .hide-mobile { display: none; }
+}
 """
 
 _SHIELD_ICON = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
@@ -258,9 +273,9 @@ def _render_html():
             f"<tr>"
             f"<td>{addr}</td>"
             f"<td>{escape(str(mb['imap_server']))}</td>"
-            f"<td>{escape(str(mb['imap_port']))}</td>"
+            f"<td class='hide-mobile'>{escape(str(mb['imap_port']))}</td>"
             f"<td><code>{escape(str(mb['spam_folder']))}</code></td>"
-            f"<td>{escape(str(mb['max_emails']))}</td>"
+            f"<td class='hide-mobile'>{escape(str(mb['max_emails']))}</td>"
             f"<td>{digest_to_cell}</td>"
             f"<td><a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
             f" onclick=\"return confirm('Run digest for {addr} now?')\">\u25b6 Run</a></td>"
@@ -279,10 +294,10 @@ def _render_html():
             run_rows += (
                 f"<tr>"
                 f"<td>{escape(str(r.get('email_address', '')))}</td>"
-                f"<td><code>{escape(str(r.get('spam_folder', 'Junk')))}</code></td>"
+                f"<td class='hide-mobile'><code>{escape(str(r.get('spam_folder', 'Junk')))}</code></td>"
                 f"<td><span class='badge {badge}'>{escape(st)}</span></td>"
                 f"<td>{r.get('count', 0)}</td>"
-                f"<td>{float(r.get('duration_seconds', 0)):.2f}s</td>"
+                f"<td class='hide-mobile'>{float(r.get('duration_seconds', 0)):.2f}s</td>"
                 f"<td>{sent_cell}</td>"
                 f"<td class='{'cell-err' if err else 'cell-muted'}'>{escape(err) if err else '\u2014'}</td>"
                 f"</tr>"
@@ -291,7 +306,7 @@ def _render_html():
             f"<section class='card'>"
             f"<div class='card-header'><p class='card-title'>Last Run &nbsp;\u00b7&nbsp; {ts}</p></div>"
             f"<div class='table-wrap'><table>"
-            f"<thead><tr><th>Mailbox</th><th>Folder</th><th>Status</th><th>Spam found</th><th>Duration</th><th>Digest sent</th><th>Error</th></tr></thead>"
+            f"<thead><tr><th>Mailbox</th><th class='hide-mobile'>Folder</th><th>Status</th><th>Spam found</th><th class='hide-mobile'>Duration</th><th>Digest sent</th><th>Error</th></tr></thead>"
             f"<tbody>{run_rows}</tbody></table></div></section>"
         )
     else:
@@ -332,7 +347,7 @@ def _render_html():
         f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'>{len(mailboxes)}</span></div>"
         f"</div></section></div>"
         f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p></div>"
-        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th>Port</th><th>Spam folder</th><th>Max emails</th><th>Digest to</th><th></th></tr></thead>"
+        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th class='hide-mobile'>Port</th><th>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th></th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div></section>"
         f"{last_run_html}"
         f"{_render_guide(active_vars)}"
@@ -379,7 +394,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
             email = params.get("email", [""])[0]
-            if email:
+            if email and _EMAIL_RE.match(email):
                 ok, out = _run_digest(["--force-send", "--only", email])
                 print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)

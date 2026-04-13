@@ -28,7 +28,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 STATE_FILE = "/tmp/spam_digest_last_run.json"
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
@@ -411,7 +411,7 @@ header .meta { font-size: 12px; color: #94a3b8; margin-top: 4px; }
     background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
     padding: 0; margin-bottom: 16px; overflow: hidden;
 }
-.ai-summary table { width: 100%; border-collapse: collapse; }
+.ai-summary table { width: 100%; border-collapse: collapse; table-layout: auto; }
 .ai-summary td {
     padding: 12px 16px; text-align: center; border-right: 1px solid #e2e8f0;
     font-size: 13px;
@@ -485,6 +485,11 @@ footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; 
 
 
 
+def _attr(s):
+    """Escape a string for use inside an HTML attribute delimited by single quotes."""
+    return escape(s).replace("'", "&#39;")
+
+
 def _split_from_header(from_str):
     """Return a display name and the original sender address, if available."""
     from_str = (from_str or "").strip()
@@ -510,11 +515,11 @@ def _email_row(em, show_ai):
     from_display = escape(from_display_name)
     from_addr_html = ""
     if from_addr and from_addr != from_display_name:
-        from_addr_html = f"<span class='from-addr' title='{escape(from_addr)}'>{escape(from_addr)}</span>"
-    from_title = escape(from_raw)
+        from_addr_html = f"<span class='from-addr' title='{_attr(from_addr)}'>{escape(from_addr)}</span>"
+    from_title = _attr(from_raw)
     date_full = em.get("date") or "\u2014"
     date_short = escape(date_full[:10])          # YYYY-MM-DD only
-    reason_td = f"<td class='td-reason col-reason' title='{reason}'>{reason}</td>" if show_ai else ""
+    reason_td = f"<td class='td-reason col-reason' title='{_attr(em.get(\"ai_reason\") or \"\")}'>{reason}</td>" if show_ai else ""
     badge_td = f"<td class='col-label'>{badge_html}</td>" if show_ai else ""
 
     return (
@@ -523,7 +528,7 @@ def _email_row(em, show_ai):
         f"<td class='td-from col-from' title='{from_title}'>"
         f"<span class='from-name'>{from_display}</span>{from_addr_html}"
         f"</td>"
-        f"<td class='td-subject col-subject' title='{subject}'>{subject}</td>"
+        f"<td class='td-subject col-subject' title='{_attr(em.get(\"subject\") or \"(no subject)\")}'>{subject}</td>"
         f"{badge_td}{reason_td}"
         f"</tr>"
     )
@@ -532,18 +537,22 @@ def _email_row(em, show_ai):
 def _table_for_emails(emails, show_ai):
     if show_ai:
         colgroup = (
+            "<colgroup>"
             "<col class='col-date'>"
             "<col class='col-from'>"
             "<col class='col-subject'>"
             "<col class='col-label'>"
             "<col class='col-reason'>"
+            "</colgroup>"
         )
         ai_header = "<th class='col-label'>Label</th><th class='col-reason'>Reason</th>"
     else:
         colgroup = (
+            "<colgroup>"
             "<col class='col-date'>"
             "<col class='col-from'>"
             "<col class='col-subject'>"
+            "</colgroup>"
         )
         ai_header = ""
     rows = "".join(_email_row(em, show_ai) for em in emails)
