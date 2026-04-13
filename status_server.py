@@ -291,6 +291,8 @@ def _render_html():
             err = r.get("error_message") or ""
             r_sent = r.get("sent", False)
             sent_cell = "<span class='badge badge-ok'>sent</span>" if r_sent else "<span class='badge badge-muted'>not sent</span>"
+            err_class = "cell-err" if err else "cell-muted"
+            err_display = escape(err) if err else "\u2014"
             run_rows += (
                 f"<tr>"
                 f"<td>{escape(str(r.get('email_address', '')))}</td>"
@@ -299,7 +301,7 @@ def _render_html():
                 f"<td>{r.get('count', 0)}</td>"
                 f"<td class='hide-mobile'>{float(r.get('duration_seconds', 0)):.2f}s</td>"
                 f"<td>{sent_cell}</td>"
-                f"<td class='{'cell-err' if err else 'cell-muted'}'>{escape(err) if err else '\u2014'}</td>"
+                f"<td class='{err_class}'>{err_display}</td>"
                 f"</tr>"
             )
         last_run_html = (
@@ -317,6 +319,10 @@ def _render_html():
 
     ai_dot = "dot-ok" if ai_ok else "dot-muted"
     ai_label = "Enabled" if ai_ok else "Disabled"
+    ai_model_span = (
+        f"<span style='font-size:.72rem;color:var(--muted)'>{escape(ai_model)}</span>"
+        if ai_ok else ""
+    )
     smtp_dot = "dot-ok" if smtp_ok else "dot-muted"
     smtp_label = smtp_host if smtp_ok else "Not configured"
 
@@ -340,7 +346,7 @@ def _render_html():
         f"<section class='card'><p class='card-title'>Configuration</p><div class='mini-grid'>"
         f"<div class='mini-box'><span class='stat-label'>AI classification</span>"
         f"<span class='stat-value'><span class='dot {ai_dot}'></span> {ai_label}</span>"
-        f"{'<span style=\'font-size:.72rem;color:var(--muted)\'>' + escape(ai_model) + '</span>' if ai_ok else ''}</div>"
+        f"{ai_model_span}</div>"
         f"<div class='mini-box'><span class='stat-label'>SMTP / digest email</span>"
         f"<span class='stat-value'><span class='dot {smtp_dot}'></span> {escape(smtp_label)}</span></div>"
         f"<div class='mini-box'><span class='stat-label'>Send if empty</span><span class='stat-value'>{'Yes' if send_if_empty else 'No (skip)'}</span></div>"

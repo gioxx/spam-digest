@@ -519,7 +519,9 @@ def _email_row(em, show_ai):
     from_title = _attr(from_raw)
     date_full = em.get("date") or "\u2014"
     date_short = escape(date_full[:10])          # YYYY-MM-DD only
-    reason_td = f"<td class='td-reason col-reason' title='{_attr(em.get(\"ai_reason\") or \"\")}'>{reason}</td>" if show_ai else ""
+    reason_title = _attr(em.get("ai_reason") or "")
+    subject_title = _attr(em.get("subject") or "(no subject)")
+    reason_td = f"<td class='td-reason col-reason' title='{reason_title}'>{reason}</td>" if show_ai else ""
     badge_td = f"<td class='col-label'>{badge_html}</td>" if show_ai else ""
 
     return (
@@ -528,7 +530,7 @@ def _email_row(em, show_ai):
         f"<td class='td-from col-from' title='{from_title}'>"
         f"<span class='from-name'>{from_display}</span>{from_addr_html}"
         f"</td>"
-        f"<td class='td-subject col-subject' title='{_attr(em.get(\"subject\") or \"(no subject)\")}'>{subject}</td>"
+        f"<td class='td-subject col-subject' title='{subject_title}'>{subject}</td>"
         f"{badge_td}{reason_td}"
         f"</tr>"
     )
