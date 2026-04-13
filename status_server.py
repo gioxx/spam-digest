@@ -17,6 +17,10 @@ import urllib.parse
 from html import escape
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
+_MAILBOX_ALLOWLIST = {
+    "ops": "ops@example.com",
+    "alerts": "alerts@example.com",
+}
 
 STATE_FILE = "/tmp/spam_digest_last_run.json"
 APP_VERSION = "0.2.0"
@@ -411,10 +415,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/action/run-mailbox"):
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            email = params.get("email", [""])[0]
-            if email and _EMAIL_RE.match(email):
+            mailbox = params.get("mailbox", [""])[0]
+            email = _MAILBOX_ALLOWLIST.get(mailbox, "")
+            if email:
                 ok, out = _run_digest("mailbox", email=email)
-                print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
+                print(f"[action/run-mailbox] mailbox={mailbox} email={email} ok={ok} | {out[:200]}", flush=True)
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
