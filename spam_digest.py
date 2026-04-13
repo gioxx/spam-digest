@@ -28,8 +28,8 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-APP_VERSION = "0.2.0"
-STATE_FILE = "/tmp/spam_digest_last_run.json"
+APP_VERSION = "0.3.0"
+STATE_FILE = "/data/spam_digest_last_run.json"
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
 DEFAULT_AI_MAX_EMAILS = 50
@@ -58,11 +58,21 @@ def _get_config_value(cfg, *keys, default=None):
     return default
 
 
+def _parse_bool(value, default=True):
+    """Parse a boolean-ish value (string or bool). Returns default on unrecognised input."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return default
+
+
 def _build_single_mailbox_config():
     email_user = os.getenv("EMAIL_USER", "")
     return {
         "imap_server": os.getenv("IMAP_SERVER", ""),
         "imap_port": _parse_int(os.getenv("IMAP_PORT", "993"), 993, "IMAP_PORT"),
+        "imap_use_ssl": _parse_bool(os.getenv("IMAP_USE_SSL", "true")),
         "email_user": email_user,
         "email_pass": os.getenv("EMAIL_PASS", ""),
         "email_address": os.getenv("EMAIL_ADDRESS") or email_user,
@@ -78,6 +88,9 @@ def _normalize_mailbox_config(raw, index):
         "imap_server": _get_config_value(raw, "imap_server", "IMAP_SERVER", default=""),
         "imap_port": _parse_int(
             _get_config_value(raw, "imap_port", "IMAP_PORT", default=993), 993, f"MAILBOX_CONFIGS[{index}].imap_port"
+        ),
+        "imap_use_ssl": _parse_bool(
+            _get_config_value(raw, "imap_use_ssl", "IMAP_USE_SSL", default=True)
         ),
         "email_user": email_user,
         "email_pass": _get_config_value(raw, "email_pass", "EMAIL_PASS", default=""),
@@ -158,16 +171,21 @@ def fetch_spam_emails(cfg):
 
     imap_server = cfg["imap_server"]
     imap_port = cfg["imap_port"]
+    imap_use_ssl = cfg.get("imap_use_ssl", True)
     email_user = cfg["email_user"]
     email_pass = cfg["email_pass"]
     email_address = cfg["email_address"] or email_user
     spam_folder = cfg["spam_folder"]
     max_emails = cfg["max_emails"]
 
-    logging.info("Connecting to %s:%s as %s (folder: %s).", imap_server, imap_port, email_user, spam_folder)
+    ssl_label = "SSL/TLS" if imap_use_ssl else "plain (no SSL)"
+    logging.info("Connecting to %s:%s as %s (folder: %s, %s).", imap_server, imap_port, email_user, spam_folder, ssl_label)
 
     try:
-        mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        if imap_use_ssl:
+            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        else:
+            mail = imaplib.IMAP4(imap_server, imap_port)
         mail.login(email_user, email_pass)
 
         # Try to select the spam folder; attempt common aliases if not found.
@@ -244,6 +262,15 @@ def fetch_spam_emails(cfg):
             except Exception as e:
                 logging.warning("Error reading email UID %s: %s", num, e)
 
+    except ssl.SSLError as e:
+        status = "error"
+        error_msg = f"SSL error: {e}"
+        logging.error(
+            "SSL error fetching spam from %s: %s — "
+            "Hint: set IMAP_USE_SSL=false (or \"imap_use_ssl\": false in MAILBOX_CONFIGS) "
+            "to connect without SSL/TLS.",
+            email_address, e,
+        )
     except Exception as e:
         status = "error"
         error_msg = str(e)
@@ -834,6 +861,15 @@ def main():
     classify_with_ai(results)
 
     for result in results:
+        if result["status"] == "error":
+            logging.warning(
+                "Skipping digest for %s: mailbox fetch failed (%s). "
+                "Fix the error above and re-run.",
+                result["email_address"],
+                result.get("error_message") or "unknown error",
+            )
+            continue
+
         to_address = result.get("digest_to") or result["email_address"]
         count = result["count"]
 

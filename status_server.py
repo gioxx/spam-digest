@@ -18,8 +18,8 @@ from html import escape
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
-STATE_FILE = "/tmp/spam_digest_last_run.json"
-APP_VERSION = "0.2.1"
+STATE_FILE = "/data/spam_digest_last_run.json"
+APP_VERSION = "0.3.0"
 
 
 def _get_mailbox_configs():
@@ -106,7 +106,7 @@ def _get_last_run():
 
 def _active_env_vars():
     candidates = (
-        "IMAP_SERVER", "IMAP_PORT", "EMAIL_USER", "EMAIL_PASS",
+        "IMAP_SERVER", "IMAP_PORT", "IMAP_USE_SSL", "EMAIL_USER", "EMAIL_PASS",
         "EMAIL_ADDRESS", "SPAM_FOLDER", "MAX_EMAILS", "MAILBOX_CONFIGS",
         "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_TO", "DIGEST_FROM",
         "AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS",
@@ -215,7 +215,8 @@ def _render_guide(active_vars):
     rows = "".join([
         section("IMAP / Mailboxes"),
         row("IMAP_SERVER",    "\u2014",       "IMAP hostname. <strong>Required</strong> (single mailbox mode)."),
-        row("IMAP_PORT",      "993",           "IMAP SSL port."),
+        row("IMAP_PORT",      "993",           "IMAP port. 993 = SSL/TLS (default), 143 = plain/STARTTLS."),
+        row("IMAP_USE_SSL",   "true",          "Set to <code>false</code> to connect without SSL/TLS (e.g. if you get an SSL record layer error). Also supported per-mailbox in MAILBOX_CONFIGS as <code>\"imap_use_ssl\": false</code>."),
         row("EMAIL_USER",     "\u2014",       "<strong>Required</strong>. IMAP login username."),
         row("EMAIL_PASS",     "\u2014",       "<strong>Required</strong>. IMAP login password."),
         row("EMAIL_ADDRESS",  "EMAIL_USER",    "Display label for logs and digest."),
@@ -256,7 +257,7 @@ def _render_html():
     mailboxes = _get_mailbox_configs()
     cron_expr, schedule_desc = _get_schedule()
     last_run = _get_last_run()
-    ai_ok, ai_detail, ai_model, ai_max = _ai_status()
+    ai_ok, ai_detail, *_ = _ai_status()
     smtp_ok, smtp_host, smtp_port, smtp_user, send_if_empty = _smtp_status()
     active_vars = _active_env_vars()
 
@@ -320,10 +321,6 @@ def _render_html():
 
     ai_dot = "dot-ok" if ai_ok else "dot-muted"
     ai_label = "Enabled" if ai_ok else "Disabled"
-    ai_model_span = (
-        f"<span style='font-size:.72rem;color:var(--muted)'>{escape(ai_model)}</span>"
-        if ai_ok else ""
-    )
     smtp_dot = "dot-ok" if smtp_ok else "dot-muted"
     smtp_label = smtp_host if smtp_ok else "Not configured"
 
@@ -347,7 +344,7 @@ def _render_html():
         f"<section class='card'><p class='card-title'>Configuration</p><div class='mini-grid'>"
         f"<div class='mini-box'><span class='stat-label'>AI classification</span>"
         f"<span class='stat-value'><span class='dot {ai_dot}'></span> {ai_label}</span>"
-        f"{ai_model_span}</div>"
+        f"</div>"
         f"<div class='mini-box'><span class='stat-label'>SMTP / digest email</span>"
         f"<span class='stat-value'><span class='dot {smtp_dot}'></span> {escape(smtp_label)}</span></div>"
         f"<div class='mini-box'><span class='stat-label'>Send if empty</span><span class='stat-value'>{'Yes' if send_if_empty else 'No (skip)'}</span></div>"

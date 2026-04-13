@@ -6,12 +6,15 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"          # status dashboard
+    volumes:
+      - spam_digest_data:/data   # persistent state (last run history)
     environment:
       TZ: Europe/Rome
 
       # --- Single mailbox ---
       IMAP_SERVER: imap.example.com
       IMAP_PORT: "993"
+      IMAP_USE_SSL: "true"       # set to "false" if your server doesn't support SSL/TLS
       EMAIL_USER: you@example.com
       EMAIL_PASS: your-imap-password
       SPAM_FOLDER: Junk
@@ -42,9 +45,13 @@ services:
     #   MAILBOX_CONFIGS: |
     #     [
     #       {"imap_server":"imap.gmail.com","email_user":"a@gmail.com","email_pass":"app-password","spam_folder":"[Gmail]/Spam"},
-    #       {"imap_server":"imap.outlook.com","email_user":"b@outlook.com","email_pass":"secret","spam_folder":"Junk","digest_to":"admin@example.com"}
+    #       {"imap_server":"imap.outlook.com","email_user":"b@outlook.com","email_pass":"secret","spam_folder":"Junk","digest_to":"admin@example.com"},
+    #       {"imap_server":"imap.myserver.com","email_user":"c@myserver.com","email_pass":"secret","imap_use_ssl":false,"imap_port":143}
     #     ]
     #   SMTP_HOST: smtp.gmail.com
     #   SMTP_PORT: "587"
     #   SMTP_USER: a@gmail.com
     #   SMTP_PASS: app-password
+
+volumes:
+  spam_digest_data:
