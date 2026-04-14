@@ -86,6 +86,7 @@ Open `http://localhost:8080` for the status dashboard.
 | `SCHEDULE_DAY` | `*` | Cron weekday. `*` = every day. `0`=Sun … `6`=Sat. |
 | `RUN_ON_START` | `false` | Run the digest immediately on container start. Default: rely on cron schedule only. |
 | `WEB_PORT` | `8080` | Dashboard port. |
+| `WEB_BASE_URL` | _(unset)_ | Public base URL of the dashboard (e.g. `http://192.168.1.10:8080`). Required to include the "Delete confirmed spam" link in digest emails. |
 | `TZ` | `UTC` | Container timezone (e.g. `Europe/Rome`). |
 
 ---

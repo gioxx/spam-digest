@@ -224,7 +224,7 @@ def _active_env_vars():
         "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_TO", "DIGEST_FROM",
         "AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS",
         "SEND_IF_EMPTY", "SCHEDULE_MIN", "SCHEDULE_HOUR", "SCHEDULE_DAY",
-        "WEB_PORT", "RUN_ON_START", "TZ",
+        "WEB_PORT", "WEB_BASE_URL", "RUN_ON_START", "TZ",
     )
     return {k for k in candidates if os.getenv(k)}
 
@@ -355,6 +355,7 @@ def _render_guide(active_vars):
         row("SCHEDULE_DAY",   "*",  "Cron weekday. <code>*</code> = every day. 0=Sun \u2026 6=Sat."),
         section("Web dashboard / misc"),
         row("WEB_PORT",       "8080",  "Port for the status dashboard."),
+        row("WEB_BASE_URL",   "",      "Public base URL of the dashboard (e.g. <code>http://192.168.1.10:8080</code>). Required to include the <em>Delete confirmed spam</em> link in digest emails."),
         row("RUN_ON_START",   "false", "Run the digest immediately on container start. Default: <code>false</code> (rely on cron schedule)."),
         row("TZ",             "UTC",   "Container timezone. Example: <code>Europe/Rome</code>."),
     ])
