@@ -775,23 +775,38 @@ def send_digest_email(html_body, subject, generated_at, to_address):
 # ---------------------------------------------------------------------------
 
 def save_state(results, generated_at, total_count):
+    # Load existing state so we can merge per-mailbox entries rather than overwrite.
+    existing_mailboxes = {}
+    try:
+        with open(STATE_FILE) as f:
+            prev = json.load(f)
+        for mb in prev.get("mailboxes", []):
+            addr = mb.get("email_address", "")
+            if addr:
+                existing_mailboxes[addr] = mb
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    for r in results:
+        addr = r["email_address"]
+        existing_mailboxes[addr] = {
+            "email_address": addr,
+            "digest_to": r.get("digest_to") or addr,
+            "spam_folder": r["spam_folder"],
+            "status": r["status"],
+            "count": r["count"],
+            "duration_seconds": round(r["duration_seconds"], 3),
+            "error_message": r.get("error_message"),
+            "sent": r.get("sent", False),
+            "last_run": generated_at,
+        }
+
+    merged_mailboxes = list(existing_mailboxes.values())
     state = {
         "timestamp": generated_at,
-        "total_count": total_count,
-        "sent": any(r.get("sent") for r in results),
-        "mailboxes": [
-            {
-                "email_address": r["email_address"],
-                "digest_to": r.get("digest_to") or r["email_address"],
-                "spam_folder": r["spam_folder"],
-                "status": r["status"],
-                "count": r["count"],
-                "duration_seconds": round(r["duration_seconds"], 3),
-                "error_message": r.get("error_message"),
-                "sent": r.get("sent", False),
-            }
-            for r in results
-        ],
+        "total_count": sum(mb.get("count", 0) for mb in merged_mailboxes),
+        "sent": any(mb.get("sent") for mb in merged_mailboxes),
+        "mailboxes": merged_mailboxes,
     }
     try:
         with open(STATE_FILE, "w") as f:

@@ -295,6 +295,7 @@ def _render_html():
             sent_cell = "<span class='badge badge-ok'>sent</span>" if r_sent else "<span class='badge badge-muted'>not sent</span>"
             err_class = "cell-err" if err else "cell-muted"
             err_display = escape(err) if err else "\u2014"
+            mb_ts = escape(str(r.get("last_run") or "—"))
             run_rows += (
                 f"<tr>"
                 f"<td>{escape(str(r.get('email_address', '')))}</td>"
@@ -303,14 +304,15 @@ def _render_html():
                 f"<td>{r.get('count', 0)}</td>"
                 f"<td class='hide-mobile'>{float(r.get('duration_seconds', 0)):.2f}s</td>"
                 f"<td>{sent_cell}</td>"
+                f"<td class='hide-mobile'>{mb_ts}</td>"
                 f"<td class='{err_class}'>{err_display}</td>"
                 f"</tr>"
             )
         last_run_html = (
             f"<section class='card'>"
-            f"<div class='card-header'><p class='card-title'>Last Run &nbsp;\u00b7&nbsp; {ts}</p></div>"
+            f"<div class='card-header'><p class='card-title'>Last Run &nbsp;\u00b7&nbsp; latest {ts}</p></div>"
             f"<div class='table-wrap'><table>"
-            f"<thead><tr><th>Mailbox</th><th class='hide-mobile'>Folder</th><th>Status</th><th>Spam found</th><th class='hide-mobile'>Duration</th><th>Digest sent</th><th>Error</th></tr></thead>"
+            f"<thead><tr><th>Mailbox</th><th class='hide-mobile'>Folder</th><th>Status</th><th>Spam found</th><th class='hide-mobile'>Duration</th><th>Digest sent</th><th class='hide-mobile'>Last run</th><th>Error</th></tr></thead>"
             f"<tbody>{run_rows}</tbody></table></div></section>"
         )
     else:
@@ -350,7 +352,9 @@ def _render_html():
         f"<div class='mini-box'><span class='stat-label'>Send if empty</span><span class='stat-value'>{'Yes' if send_if_empty else 'No (skip)'}</span></div>"
         f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'>{len(mailboxes)}</span></div>"
         f"</div></section></div>"
-        f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p></div>"
+        f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p>"
+        f"<a class='btn-action' href='/action/run-now'"
+        f" onclick=\"return confirm('Run digest for all mailboxes now?')\">\u25b6 Run all</a></div>"
         f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th class='hide-mobile'>Port</th><th>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th></th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div></section>"
         f"{last_run_html}"
