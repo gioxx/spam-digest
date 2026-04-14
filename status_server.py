@@ -499,7 +499,7 @@ def _run_digest(action, email=None, allowed_emails=None):
             return False, "invalid email"
         if allowed_emails is None or email not in allowed_emails:
             return False, "unconfigured email"
-        cmd = base_cmd + ["--force-send", "--only", email]
+        cmd = base_cmd + ["--force-send", "--only", "--", email]
     else:
         return False, "invalid action"
 
