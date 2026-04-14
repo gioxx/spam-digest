@@ -10,6 +10,8 @@ import argparse
 import datetime
 import email as email_lib
 import email.header
+import hashlib
+import hmac
 import imaplib
 import json
 import logging
@@ -19,6 +21,7 @@ import socket
 import ssl
 import sys
 import time
+import urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
@@ -30,6 +33,7 @@ logging.basicConfig(
 
 APP_VERSION = "0.3.0"
 STATE_FILE = "/data/spam_digest_last_run.json"
+SECRET_FILE = "/data/spam_digest_secret.key"
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
 DEFAULT_AI_MAX_EMAILS = 50
@@ -592,7 +596,7 @@ def _table_for_emails(emails, show_ai):
     )
 
 
-def build_html_digest(all_results, generated_at):
+def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None):
     ai_enabled = (
         os.getenv("AI_PROVIDER", "none").strip().lower() == "anthropic"
         and bool(os.getenv("AI_API_KEY"))
@@ -670,10 +674,27 @@ def build_html_digest(all_results, generated_at):
                     f"{_table_for_emails(uncertain_e, True)}</div>"
                 )
             if spam_e:
+                delete_btn = ""
+                if web_base_url and delete_tokens and r["email_address"] in delete_tokens:
+                    token = delete_tokens[r["email_address"]]
+                    ts_enc = urllib.parse.quote(generated_at, safe="")
+                    addr_enc = urllib.parse.quote(r["email_address"], safe="")
+                    delete_url = (
+                        f"{web_base_url}/action/delete-spam"
+                        f"?email={addr_enc}&ts={ts_enc}&token={token}"
+                    )
+                    delete_btn = (
+                        f"<div style='text-align:center;margin:10px 0 4px'>"
+                        f"<a href='{delete_url}' style='display:inline-block;background:#dc2626;"
+                        f"color:#fff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
+                        f"font-weight:600;text-decoration:none;letter-spacing:0.01em'>"
+                        f"\U0001f5d1 Delete {len(spam_e)} confirmed spam email(s) permanently"
+                        f"</a></div>"
+                    )
                 sections += (
                     f"<div class='section' style='padding:12px 14px 0'>"
                     f"<div class='section-title spam'>\U0001f534 Confirmed spam ({len(spam_e)}) \u2014 safe to ignore</div>"
-                    f"{_table_for_emails(spam_e, True)}</div>"
+                    f"{_table_for_emails(spam_e, True)}{delete_btn}</div>"
                 )
             if unclassified:
                 sections += (
@@ -771,6 +792,34 @@ def send_digest_email(html_body, subject, generated_at, to_address):
 
 
 # ---------------------------------------------------------------------------
+# Delete-link secret and token
+# ---------------------------------------------------------------------------
+
+def _load_or_create_secret():
+    """Load the HMAC signing secret from disk, creating it if absent."""
+    try:
+        with open(SECRET_FILE) as f:
+            return bytes.fromhex(f.read().strip())
+    except FileNotFoundError:
+        secret = os.urandom(32)
+        try:
+            with open(SECRET_FILE, "w") as f:
+                f.write(secret.hex())
+        except OSError as e:
+            logging.warning("Could not write secret file %s: %s", SECRET_FILE, e)
+        return secret
+    except Exception as e:
+        logging.warning("Could not read secret file %s: %s", SECRET_FILE, e)
+        return os.urandom(32)
+
+
+def _delete_token(secret, email, ts):
+    """Return a hex HMAC-SHA256 token binding email + run timestamp."""
+    msg = f"{email}|{ts}".encode()
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
 
@@ -789,6 +838,10 @@ def save_state(results, generated_at, total_count):
 
     for r in results:
         addr = r["email_address"]
+        confirmed_uids = [
+            e["uid"] for e in r.get("emails", [])
+            if e.get("ai_label") == "spam"
+        ]
         existing_mailboxes[addr] = {
             "email_address": addr,
             "digest_to": r.get("digest_to") or addr,
@@ -799,6 +852,7 @@ def save_state(results, generated_at, total_count):
             "error_message": r.get("error_message"),
             "sent": r.get("sent", False),
             "last_run": generated_at,
+            "confirmed_spam_uids": confirmed_uids,
         }
 
     merged_mailboxes = list(existing_mailboxes.values())
@@ -893,7 +947,19 @@ def main():
         else:
             subject = f"Spam Digest \u2014 {generated_at} \u2014 {count} email(s) in spam"
 
-        html_body = build_html_digest([result], generated_at)
+        web_base_url = os.getenv("WEB_BASE_URL", "").strip().rstrip("/")
+        delete_tokens = {}
+        if web_base_url:
+            secret = _load_or_create_secret()
+            if any(e.get("ai_label") == "spam" for e in result.get("emails", [])):
+                delete_tokens[result["email_address"]] = _delete_token(
+                    secret, result["email_address"], generated_at
+                )
+        html_body = build_html_digest(
+            [result], generated_at,
+            web_base_url=web_base_url or None,
+            delete_tokens=delete_tokens or None,
+        )
 
         if args.dry_run:
             logging.info(

@@ -6,11 +6,15 @@ Listens on WEB_PORT (default 8080).
 """
 
 import datetime
+import hashlib
+import hmac
 import http.server
+import imaplib
 import json
 import os
 import re
 import socketserver
+import ssl
 import subprocess
 import sys
 import urllib.parse
@@ -19,7 +23,9 @@ from html import escape
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
 STATE_FILE = "/data/spam_digest_last_run.json"
+SECRET_FILE = "/data/spam_digest_secret.key"
 APP_VERSION = "0.3.0"
+_DELETE_TOKEN_MAX_AGE_DAYS = 7
 
 
 def _get_mailbox_configs():
@@ -102,6 +108,113 @@ def _get_last_run():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+
+def _load_secret():
+    try:
+        with open(SECRET_FILE) as f:
+            return bytes.fromhex(f.read().strip())
+    except Exception:
+        return None
+
+
+def _verify_delete_token(secret, email, ts, token):
+    """Return True if token is a valid HMAC for (email, ts) and not expired."""
+    expected = hmac.new(secret, f"{email}|{ts}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, token):
+        return False, "invalid token"
+    try:
+        run_dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M")
+        age = datetime.datetime.now() - run_dt
+        if age.days > _DELETE_TOKEN_MAX_AGE_DAYS:
+            return False, f"link expired ({age.days} days old)"
+    except ValueError:
+        return False, "unparseable timestamp"
+    return True, "ok"
+
+
+def _do_delete_spam(email, ts, token):
+    """Verify token, connect to IMAP, delete confirmed spam UIDs, update state.
+
+    Returns (success: bool, message: str).
+    """
+    secret = _load_secret()
+    if secret is None:
+        return False, "Secret key not found — run the digest at least once first."
+
+    ok, reason = _verify_delete_token(secret, email, ts, token)
+    if not ok:
+        return False, f"Access denied: {reason}."
+
+    # Load UIDs from state
+    state = _get_last_run()
+    if not state:
+        return False, "No run state found."
+    mb_state = next(
+        (m for m in state.get("mailboxes", []) if m.get("email_address") == email),
+        None,
+    )
+    if mb_state is None:
+        return False, f"Mailbox {email} not found in state."
+
+    uids = mb_state.get("confirmed_spam_uids", [])
+    if not uids:
+        return True, "No confirmed spam UIDs on record — already deleted or digest had none."
+
+    spam_folder = mb_state.get("spam_folder", "Junk")
+
+    # Find IMAP credentials
+    cfg = next(
+        (c for c in _get_mailbox_configs() if c.get("email_address") == email),
+        None,
+    )
+    if cfg is None:
+        return False, f"No IMAP config found for {email}."
+
+    imap_server = cfg.get("imap_server", "")
+    imap_port = int(cfg.get("imap_port", 993))
+    imap_use_ssl = str(cfg.get("imap_use_ssl", "true")).lower() not in ("false", "0", "no")
+    email_user = cfg.get("email_user") or cfg.get("email_address", "")
+    email_pass = cfg.get("email_pass", "")
+
+    mail = None
+    try:
+        if imap_use_ssl:
+            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        else:
+            mail = imaplib.IMAP4(imap_server, imap_port)
+        mail.login(email_user, email_pass)
+        mail.select(spam_folder)
+
+        deleted = 0
+        for uid in uids:
+            uid_b = uid.encode() if isinstance(uid, str) else uid
+            typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+            if typ == "OK":
+                deleted += 1
+        mail.expunge()
+    except ssl.SSLError as e:
+        return False, f"SSL error connecting to {imap_server}: {e}"
+    except imaplib.IMAP4.error as e:
+        return False, f"IMAP error: {e}"
+    except Exception as e:
+        return False, f"Unexpected error: {e}"
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+    # Clear UIDs from state so the link becomes a no-op if clicked again
+    mb_state["confirmed_spam_uids"] = []
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except OSError:
+        pass
+
+    return True, f"Deleted {deleted} of {len(uids)} confirmed spam email(s) from {email}."
 
 
 def _active_env_vars():
@@ -429,6 +542,38 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
+        elif self.path.startswith("/action/delete-spam"):
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            email = params.get("email", [""])[0]
+            ts = params.get("ts", [""])[0]
+            token = params.get("token", [""])[0]
+            if email and ts and token and _EMAIL_RE.match(email):
+                ok, msg = _do_delete_spam(email, ts, token)
+            else:
+                ok, msg = False, "Missing or invalid parameters."
+            print(f"[action/delete-spam] email={email} ok={ok} | {msg}", flush=True)
+            status_word = "Done" if ok else "Error"
+            status_color = "#22c55e" if ok else "#f87171"
+            body = (
+                "<!DOCTYPE html><html lang='en'><head>"
+                "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Delete spam — Spam Digest</title>"
+                "<style>body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;"
+                "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}"
+                ".box{background:#1e293b;border:1px solid #334155;border-radius:.75rem;padding:2rem 2.5rem;"
+                "max-width:480px;text-align:center}h2{margin:0 0 .75rem}p{color:#94a3b8;margin:.5rem 0 1.5rem}"
+                f"a{{color:#3b82f6;text-decoration:none}}</style></head><body>"
+                f"<div class='box'><h2 style='color:{status_color}'>{status_word}</h2>"
+                f"<p>{escape(msg)}</p>"
+                "<a href='/'>← Back to dashboard</a></div></body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()
