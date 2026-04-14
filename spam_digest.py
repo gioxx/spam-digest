@@ -10,6 +10,8 @@ import argparse
 import datetime
 import email as email_lib
 import email.header
+import hashlib
+import hmac
 import imaplib
 import json
 import logging
@@ -19,6 +21,7 @@ import socket
 import ssl
 import sys
 import time
+import urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
@@ -28,8 +31,9 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-APP_VERSION = "0.2.0"
-STATE_FILE = "/tmp/spam_digest_last_run.json"
+APP_VERSION = "0.3.0"
+STATE_FILE = "/data/spam_digest_last_run.json"
+SECRET_FILE = "/data/spam_digest_secret.key"
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
 DEFAULT_AI_MAX_EMAILS = 50
@@ -58,11 +62,21 @@ def _get_config_value(cfg, *keys, default=None):
     return default
 
 
+def _parse_bool(value, default=True):
+    """Parse a boolean-ish value (string or bool). Returns default on unrecognised input."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return default
+
+
 def _build_single_mailbox_config():
     email_user = os.getenv("EMAIL_USER", "")
     return {
         "imap_server": os.getenv("IMAP_SERVER", ""),
         "imap_port": _parse_int(os.getenv("IMAP_PORT", "993"), 993, "IMAP_PORT"),
+        "imap_use_ssl": _parse_bool(os.getenv("IMAP_USE_SSL", "true")),
         "email_user": email_user,
         "email_pass": os.getenv("EMAIL_PASS", ""),
         "email_address": os.getenv("EMAIL_ADDRESS") or email_user,
@@ -78,6 +92,9 @@ def _normalize_mailbox_config(raw, index):
         "imap_server": _get_config_value(raw, "imap_server", "IMAP_SERVER", default=""),
         "imap_port": _parse_int(
             _get_config_value(raw, "imap_port", "IMAP_PORT", default=993), 993, f"MAILBOX_CONFIGS[{index}].imap_port"
+        ),
+        "imap_use_ssl": _parse_bool(
+            _get_config_value(raw, "imap_use_ssl", "IMAP_USE_SSL", default=True)
         ),
         "email_user": email_user,
         "email_pass": _get_config_value(raw, "email_pass", "EMAIL_PASS", default=""),
@@ -158,16 +175,21 @@ def fetch_spam_emails(cfg):
 
     imap_server = cfg["imap_server"]
     imap_port = cfg["imap_port"]
+    imap_use_ssl = cfg.get("imap_use_ssl", True)
     email_user = cfg["email_user"]
     email_pass = cfg["email_pass"]
     email_address = cfg["email_address"] or email_user
     spam_folder = cfg["spam_folder"]
     max_emails = cfg["max_emails"]
 
-    logging.info("Connecting to %s:%s as %s (folder: %s).", imap_server, imap_port, email_user, spam_folder)
+    ssl_label = "SSL/TLS" if imap_use_ssl else "plain (no SSL)"
+    logging.info("Connecting to %s:%s as %s (folder: %s, %s).", imap_server, imap_port, email_user, spam_folder, ssl_label)
 
     try:
-        mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        if imap_use_ssl:
+            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        else:
+            mail = imaplib.IMAP4(imap_server, imap_port)
         mail.login(email_user, email_pass)
 
         # Try to select the spam folder; attempt common aliases if not found.
@@ -244,6 +266,15 @@ def fetch_spam_emails(cfg):
             except Exception as e:
                 logging.warning("Error reading email UID %s: %s", num, e)
 
+    except ssl.SSLError as e:
+        status = "error"
+        error_msg = f"SSL error: {e}"
+        logging.error(
+            "SSL error fetching spam from %s: %s — "
+            "Hint: set IMAP_USE_SSL=false (or \"imap_use_ssl\": false in MAILBOX_CONFIGS) "
+            "to connect without SSL/TLS.",
+            email_address, e,
+        )
     except Exception as e:
         status = "error"
         error_msg = str(e)
@@ -565,7 +596,7 @@ def _table_for_emails(emails, show_ai):
     )
 
 
-def build_html_digest(all_results, generated_at):
+def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None):
     ai_enabled = (
         os.getenv("AI_PROVIDER", "none").strip().lower() == "anthropic"
         and bool(os.getenv("AI_API_KEY"))
@@ -643,10 +674,27 @@ def build_html_digest(all_results, generated_at):
                     f"{_table_for_emails(uncertain_e, True)}</div>"
                 )
             if spam_e:
+                delete_btn = ""
+                if web_base_url and delete_tokens and r["email_address"] in delete_tokens:
+                    token = delete_tokens[r["email_address"]]
+                    ts_enc = urllib.parse.quote(generated_at, safe="")
+                    addr_enc = urllib.parse.quote(r["email_address"], safe="")
+                    delete_url = (
+                        f"{web_base_url}/action/delete-spam"
+                        f"?email={addr_enc}&ts={ts_enc}&token={token}"
+                    )
+                    delete_btn = (
+                        f"<div style='text-align:center;margin:10px 0 4px'>"
+                        f"<a href='{delete_url}' style='display:inline-block;background:#dc2626;"
+                        f"color:#fff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
+                        f"font-weight:600;text-decoration:none;letter-spacing:0.01em'>"
+                        f"\U0001f5d1 Delete {len(spam_e)} confirmed spam email(s) permanently"
+                        f"</a></div>"
+                    )
                 sections += (
                     f"<div class='section' style='padding:12px 14px 0'>"
                     f"<div class='section-title spam'>\U0001f534 Confirmed spam ({len(spam_e)}) \u2014 safe to ignore</div>"
-                    f"{_table_for_emails(spam_e, True)}</div>"
+                    f"{_table_for_emails(spam_e, True)}{delete_btn}</div>"
                 )
             if unclassified:
                 sections += (
@@ -744,27 +792,75 @@ def send_digest_email(html_body, subject, generated_at, to_address):
 
 
 # ---------------------------------------------------------------------------
+# Delete-link secret and token
+# ---------------------------------------------------------------------------
+
+def _load_or_create_secret():
+    """Load the HMAC signing secret from disk, creating it if absent."""
+    try:
+        with open(SECRET_FILE) as f:
+            return bytes.fromhex(f.read().strip())
+    except FileNotFoundError:
+        secret = os.urandom(32)
+        try:
+            with open(SECRET_FILE, "w") as f:
+                f.write(secret.hex())
+        except OSError as e:
+            logging.warning("Could not write secret file %s: %s", SECRET_FILE, e)
+        return secret
+    except Exception as e:
+        logging.warning("Could not read secret file %s: %s", SECRET_FILE, e)
+        return os.urandom(32)
+
+
+def _delete_token(secret, email, ts):
+    """Return a hex HMAC-SHA256 token binding email + run timestamp."""
+    msg = f"{email}|{ts}".encode()
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
 
 def save_state(results, generated_at, total_count):
+    # Load existing state so we can merge per-mailbox entries rather than overwrite.
+    existing_mailboxes = {}
+    try:
+        with open(STATE_FILE) as f:
+            prev = json.load(f)
+        for mb in prev.get("mailboxes", []):
+            addr = mb.get("email_address", "")
+            if addr:
+                existing_mailboxes[addr] = mb
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    for r in results:
+        addr = r["email_address"]
+        confirmed_uids = [
+            e["uid"] for e in r.get("emails", [])
+            if e.get("ai_label") == "spam"
+        ]
+        existing_mailboxes[addr] = {
+            "email_address": addr,
+            "digest_to": r.get("digest_to") or addr,
+            "spam_folder": r["spam_folder"],
+            "status": r["status"],
+            "count": r["count"],
+            "duration_seconds": round(r["duration_seconds"], 3),
+            "error_message": r.get("error_message"),
+            "sent": r.get("sent", False),
+            "last_run": generated_at,
+            "confirmed_spam_uids": confirmed_uids,
+        }
+
+    merged_mailboxes = list(existing_mailboxes.values())
     state = {
         "timestamp": generated_at,
-        "total_count": total_count,
-        "sent": any(r.get("sent") for r in results),
-        "mailboxes": [
-            {
-                "email_address": r["email_address"],
-                "digest_to": r.get("digest_to") or r["email_address"],
-                "spam_folder": r["spam_folder"],
-                "status": r["status"],
-                "count": r["count"],
-                "duration_seconds": round(r["duration_seconds"], 3),
-                "error_message": r.get("error_message"),
-                "sent": r.get("sent", False),
-            }
-            for r in results
-        ],
+        "total_count": sum(mb.get("count", 0) for mb in merged_mailboxes),
+        "sent": any(mb.get("sent") for mb in merged_mailboxes),
+        "mailboxes": merged_mailboxes,
     }
     try:
         with open(STATE_FILE, "w") as f:
@@ -834,6 +930,15 @@ def main():
     classify_with_ai(results)
 
     for result in results:
+        if result["status"] == "error":
+            logging.warning(
+                "Skipping digest for %s: mailbox fetch failed (%s). "
+                "Fix the error above and re-run.",
+                result["email_address"],
+                result.get("error_message") or "unknown error",
+            )
+            continue
+
         to_address = result.get("digest_to") or result["email_address"]
         count = result["count"]
 
@@ -842,7 +947,19 @@ def main():
         else:
             subject = f"Spam Digest \u2014 {generated_at} \u2014 {count} email(s) in spam"
 
-        html_body = build_html_digest([result], generated_at)
+        web_base_url = os.getenv("WEB_BASE_URL", "").strip().rstrip("/")
+        delete_tokens = {}
+        if web_base_url:
+            secret = _load_or_create_secret()
+            if any(e.get("ai_label") == "spam" for e in result.get("emails", [])):
+                delete_tokens[result["email_address"]] = _delete_token(
+                    secret, result["email_address"], generated_at
+                )
+        html_body = build_html_digest(
+            [result], generated_at,
+            web_base_url=web_base_url or None,
+            delete_tokens=delete_tokens or None,
+        )
 
         if args.dry_run:
             logging.info(

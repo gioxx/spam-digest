@@ -21,6 +21,9 @@ SCHEDULE_MIN=$(sanitize_cron_field "$SCHEDULE_MIN" "0")
 SCHEDULE_HOUR=$(sanitize_cron_field "$SCHEDULE_HOUR" "8")
 SCHEDULE_DAY=$(sanitize_cron_field "$SCHEDULE_DAY" "*")
 
+# Ensure persistent data directory exists.
+mkdir -p /data
+
 # Dump container environment for cron (cron does not inherit Docker env vars).
 /usr/local/bin/python3 -c "
 import os, shlex
