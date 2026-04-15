@@ -31,7 +31,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 STATE_FILE = "/data/spam_digest_last_run.json"
 SECRET_FILE = "/data/spam_digest_secret.key"
 DEFAULT_SPAM_FOLDER = "Junk"
@@ -941,6 +941,13 @@ def main():
 
         to_address = result.get("digest_to") or result["email_address"]
         count = result["count"]
+
+        if count == 0 and not send_if_empty:
+            logging.info(
+                "No spam for %s and SEND_IF_EMPTY is false. Skipping digest.",
+                result["email_address"],
+            )
+            continue
 
         if count == 0:
             subject = f"Spam Digest \u2014 {generated_at} \u2014 No spam found"
