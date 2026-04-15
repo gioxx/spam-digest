@@ -24,7 +24,7 @@ _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
 STATE_FILE = "/data/spam_digest_last_run.json"
 SECRET_FILE = "/data/spam_digest_secret.key"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 _DELETE_TOKEN_MAX_AGE_DAYS = 7
 
 
@@ -42,6 +42,9 @@ def _get_mailbox_configs():
                     email_address = cfg.get("email_address") or cfg.get("EMAIL_ADDRESS") or email_user
                     result.append({
                         "email_address": email_address,
+                        "email_user": email_user,
+                        "email_pass": cfg.get("email_pass") or cfg.get("EMAIL_PASS") or "",
+                        "imap_use_ssl": cfg.get("imap_use_ssl") if cfg.get("imap_use_ssl") is not None else cfg.get("IMAP_USE_SSL"),
                         "digest_to": (cfg.get("digest_to") or "").strip(),
                         "imap_server": cfg.get("imap_server") or cfg.get("IMAP_SERVER") or "",
                         "imap_port": cfg.get("imap_port") or cfg.get("IMAP_PORT") or 993,
@@ -55,6 +58,9 @@ def _get_mailbox_configs():
     email_user = os.getenv("EMAIL_USER", "")
     return [{
         "email_address": os.getenv("EMAIL_ADDRESS") or email_user,
+        "email_user": email_user,
+        "email_pass": os.getenv("EMAIL_PASS", ""),
+        "imap_use_ssl": os.getenv("IMAP_USE_SSL"),
         "digest_to": os.getenv("DIGEST_TO", "").strip(),
         "imap_server": os.getenv("IMAP_SERVER", ""),
         "imap_port": os.getenv("IMAP_PORT", 993),
