@@ -191,3 +191,41 @@ def get_allowlist_senders(mailbox_email):
     entry = load_allowlist().get(mailbox_email, {})
     return {s.lower() for s in entry.get("senders", []) if s}
 
+
+def extract_sender_address(from_header):
+    """Return the lowercased email address from a From: header (RFC 5322 name-addr).
+
+    Falls back to the full header (lowercased) if no <addr> form is present.
+    """
+    import email.utils
+    _, addr = email.utils.parseaddr(from_header or "")
+    addr = (addr or "").strip().lower()
+    return addr
+
+
+def match_filter_rules(rules, from_header, subject):
+    """Return the first matching rule dict, or None.
+
+    Rule types:
+      - sender_exact: full sender address equals value (case-insensitive)
+      - sender_domain: sender domain equals value (case-insensitive)
+      - subject_contains: subject contains value as substring (case-insensitive)
+    """
+    if not rules:
+        return None
+    from_addr = extract_sender_address(from_header)
+    from_domain = from_addr.rsplit("@", 1)[-1] if "@" in from_addr else ""
+    subject_lower = (subject or "").lower()
+    for rule in rules:
+        rtype = rule.get("type")
+        rvalue = (rule.get("value") or "").strip().lower()
+        if not rvalue:
+            continue
+        if rtype == "sender_exact" and from_addr and from_addr == rvalue:
+            return rule
+        if rtype == "sender_domain" and from_domain and from_domain == rvalue:
+            return rule
+        if rtype == "subject_contains" and rvalue in subject_lower:
+            return rule
+    return None
+

@@ -165,10 +165,113 @@ def _decode_header_value(raw_value):
     return "".join(decoded)
 
 
+def _apply_user_rules(mail, mails, mailbox_email):
+    """Apply blacklist filters (auto-delete) and allowlist (auto-move to INBOX)
+    against the fetched mails list, reusing the open IMAP session.
+
+    Returns (remaining_mails, auto_deleted, auto_moved).
+    Partial failures are logged; the affected email stays in `remaining_mails`
+    and will appear in the digest as usual.
+    """
+    filter_rules = shared.get_filter_rules(mailbox_email)
+    allowlist = shared.get_allowlist_senders(mailbox_email)
+    if not filter_rules and not allowlist:
+        return mails, [], []
+
+    remaining = []
+    auto_deleted = []
+    auto_moved = []
+    any_deletion_flagged = False
+
+    for em in mails:
+        from_raw = em.get("from") or ""
+        subject = em.get("subject") or ""
+        uid = em["uid"]
+        uid_b = uid.encode() if isinstance(uid, str) else uid
+
+        # 1. Blacklist filter → auto-delete
+        rule = shared.match_filter_rules(filter_rules, from_raw, subject)
+        if rule is not None:
+            try:
+                typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+                if typ == "OK":
+                    auto_deleted.append({
+                        **em,
+                        "matched_rule": {
+                            "type": rule.get("type", ""),
+                            "value": rule.get("value", ""),
+                            "id": rule.get("id", ""),
+                        },
+                    })
+                    any_deletion_flagged = True
+                    continue
+                logging.warning(
+                    "Filter auto-delete STORE failed for UID %s on %s.",
+                    uid, mailbox_email,
+                )
+            except Exception as e:
+                logging.warning(
+                    "Filter auto-delete error for UID %s on %s: %s",
+                    uid, mailbox_email, e,
+                )
+            remaining.append(em)
+            continue
+
+        # 2. Allowlist → auto-move to INBOX (COPY + \Deleted on source)
+        sender_addr = shared.extract_sender_address(from_raw)
+        if sender_addr and sender_addr in allowlist:
+            try:
+                copy_typ, _ = mail.uid("COPY", uid_b, "INBOX")
+                if copy_typ == "OK":
+                    store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+                    if store_typ == "OK":
+                        auto_moved.append({**em, "matched_sender": sender_addr})
+                        any_deletion_flagged = True
+                        continue
+                    logging.warning(
+                        "Allowlist auto-move: COPY ok but STORE failed for UID %s on %s.",
+                        uid, mailbox_email,
+                    )
+                else:
+                    logging.warning(
+                        "Allowlist auto-move COPY failed for UID %s on %s.",
+                        uid, mailbox_email,
+                    )
+            except Exception as e:
+                logging.warning(
+                    "Allowlist auto-move error for UID %s on %s: %s",
+                    uid, mailbox_email, e,
+                )
+            remaining.append(em)
+            continue
+
+        remaining.append(em)
+
+    if any_deletion_flagged:
+        try:
+            mail.expunge()
+        except Exception as e:
+            logging.warning("EXPUNGE after auto-delete/move failed on %s: %s", mailbox_email, e)
+
+    if auto_deleted:
+        logging.info(
+            "Auto-deleted %d email(s) from %s by user filter rules.",
+            len(auto_deleted), mailbox_email,
+        )
+    if auto_moved:
+        logging.info(
+            "Auto-moved %d allowlisted email(s) from spam to INBOX for %s.",
+            len(auto_moved), mailbox_email,
+        )
+    return remaining, auto_deleted, auto_moved
+
+
 def fetch_spam_emails(cfg):
     """Return a list of dicts with basic metadata for each spam email."""
     start = time.monotonic()
     mails = []
+    auto_deleted = []
+    auto_moved = []
     error_msg = None
     status = "success"
     mail = None
@@ -266,6 +369,12 @@ def fetch_spam_emails(cfg):
             except Exception as e:
                 logging.warning("Error reading email UID %s: %s", num, e)
 
+        # Apply user-defined blacklist filters (auto-delete) and allowlist
+        # (auto-move to INBOX) in the same IMAP session before returning.
+        mails, auto_deleted, auto_moved = _apply_user_rules(
+            mail, mails, email_address
+        )
+
     except ssl.SSLError as e:
         status = "error"
         error_msg = f"SSL error: {e}"
@@ -294,6 +403,8 @@ def fetch_spam_emails(cfg):
         "spam_folder": spam_folder,
         "emails": mails,
         "count": len(mails),
+        "auto_deleted": auto_deleted,
+        "auto_moved": auto_moved,
         "duration_seconds": time.monotonic() - start,
     }
 
@@ -611,6 +722,81 @@ def _table_for_emails(emails, show_ai):
     )
 
 
+def _auto_action_row(em, action_note):
+    subject = escape(em.get("subject") or "(no subject)")
+    from_raw = em.get("from") or "unknown"
+    from_display_name, from_addr = _split_from_header(from_raw)
+    from_display = escape(from_display_name)
+    from_addr_html = ""
+    if from_addr and from_addr != from_display_name:
+        from_addr_html = f"<span class='from-addr' title='{_attr(from_addr)}'>{escape(from_addr)}</span>"
+    date_full = em.get("date") or "\u2014"
+    date_short = escape(date_full[:10])
+    subject_title = _attr(em.get("subject") or "(no subject)")
+    return (
+        f"<tr>"
+        f"<td class='td-date col-date'>{date_short}</td>"
+        f"<td class='td-from col-from' title='{_attr(from_raw)}'>"
+        f"<span class='from-name'>{from_display}</span>{from_addr_html}"
+        f"</td>"
+        f"<td class='td-subject col-subject' title='{subject_title}'>{subject}</td>"
+        f"<td class='td-reason col-reason'>{action_note}</td>"
+        f"</tr>"
+    )
+
+
+def _auto_action_table(rows_html):
+    return (
+        "<table>"
+        "<colgroup>"
+        "<col width='12%'><col width='26%'><col width='42%'><col width='20%'>"
+        "</colgroup>"
+        "<thead><tr>"
+        "<th width='12%'>Date</th><th width='26%'>From</th>"
+        "<th width='42%'>Subject</th><th width='20%'>Action</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+    )
+
+
+def _auto_action_section(auto_deleted, auto_moved):
+    """Render the transparency block listing auto-deleted and auto-moved emails.
+
+    Returns '' if both lists are empty.
+    """
+    blocks = ""
+    if auto_deleted:
+        rows = "".join(
+            _auto_action_row(
+                em,
+                escape(
+                    f"deleted \u2014 rule: {em['matched_rule']['type']} = {em['matched_rule']['value']}"
+                ),
+            )
+            for em in auto_deleted
+        )
+        blocks += (
+            "<div class='section' style='padding:12px 14px 0'>"
+            f"<div class='section-title' style='color:#64748b'>"
+            f"\U0001f9f9 Auto-deleted by your filter rules ({len(auto_deleted)})"
+            "</div>"
+            f"{_auto_action_table(rows)}</div>"
+        )
+    if auto_moved:
+        rows = "".join(
+            _auto_action_row(em, escape("moved to INBOX \u2014 sender in allowlist"))
+            for em in auto_moved
+        )
+        blocks += (
+            "<div class='section' style='padding:12px 14px 0'>"
+            f"<div class='section-title' style='color:#059669'>"
+            f"\u2709\ufe0f Auto-moved to INBOX from allowlist ({len(auto_moved)})"
+            "</div>"
+            f"{_auto_action_table(rows)}</div>"
+        )
+    return blocks
+
+
 def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None):
     ai_enabled = (
         os.getenv("AI_PROVIDER", "none").strip().lower() == "anthropic"
@@ -652,6 +838,9 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
         addr = escape(r["email_address"])
         folder = escape(r["spam_folder"])
         count = r["count"]
+        auto_deleted = r.get("auto_deleted") or []
+        auto_moved = r.get("auto_moved") or []
+        auto_section = _auto_action_section(auto_deleted, auto_moved)
 
         if r["status"] != "success":
             mailbox_blocks += (
@@ -660,12 +849,21 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
             )
             continue
 
-        if count == 0:
+        if count == 0 and not auto_section:
             mailbox_blocks += (
                 f"<div class='mailbox-block'>"
                 f"<div class='mailbox-header'>\U0001f4eb {addr} &nbsp;&middot;&nbsp; {folder}</div>"
                 f"<div class='mailbox-empty'>No spam emails found.</div>"
                 f"</div>"
+            )
+            continue
+
+        if count == 0 and auto_section:
+            mailbox_blocks += (
+                f"<div class='mailbox-block'>"
+                f"<div class='mailbox-header'>\U0001f4ec {addr} &nbsp;&middot;&nbsp; {folder}"
+                f" &nbsp;&middot;&nbsp; <span style='color:#2563eb;font-weight:400'>0 remaining</span></div>"
+                f"<div class='mailbox-table-wrap'>{auto_section}</div></div>"
             )
             continue
 
@@ -726,7 +924,7 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
             f"<div class='mailbox-header'>\U0001f4ec {addr}"
             f" &nbsp;&middot;&nbsp; {folder}"
             f" &nbsp;&middot;&nbsp; <span style='color:#2563eb;font-weight:400'>{count} email(s)</span></div>"
-            f"<div class='mailbox-table-wrap'>{inner}</div></div>"
+            f"<div class='mailbox-table-wrap'>{auto_section}{inner}</div></div>"
         )
 
     ai_note = (
@@ -919,9 +1117,13 @@ def main():
         results.append(result)
 
     total_count = sum(r["count"] for r in results)
-    logging.info("Total spam emails across all mailboxes: %d.", total_count)
+    total_auto = sum(len(r.get("auto_deleted") or []) + len(r.get("auto_moved") or []) for r in results)
+    logging.info(
+        "Total spam emails across all mailboxes: %d (plus %d auto-processed).",
+        total_count, total_auto,
+    )
 
-    if total_count == 0 and not send_if_empty:
+    if total_count == 0 and total_auto == 0 and not send_if_empty:
         logging.info("No spam emails found and SEND_IF_EMPTY is false. Digest will not be sent.")
         save_state(results, generated_at, total_count=0)
         sys.exit(0)
@@ -940,16 +1142,19 @@ def main():
 
         to_address = result.get("digest_to") or result["email_address"]
         count = result["count"]
+        auto_count = len(result.get("auto_deleted") or []) + len(result.get("auto_moved") or [])
 
-        if count == 0 and not send_if_empty:
+        if count == 0 and auto_count == 0 and not send_if_empty:
             logging.info(
                 "No spam for %s and SEND_IF_EMPTY is false. Skipping digest.",
                 result["email_address"],
             )
             continue
 
-        if count == 0:
+        if count == 0 and auto_count == 0:
             subject = f"Spam Digest \u2014 {generated_at} \u2014 No spam found"
+        elif count == 0 and auto_count > 0:
+            subject = f"Spam Digest \u2014 {generated_at} \u2014 {auto_count} auto-processed"
         else:
             subject = f"Spam Digest \u2014 {generated_at} \u2014 {count} email(s) in spam"
 
