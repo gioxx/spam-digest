@@ -339,6 +339,244 @@ def _do_delete_spam(email, ts, token):
 
 
 # ---------------------------------------------------------------------------
+# Review uncertain emails page (/review)
+# ---------------------------------------------------------------------------
+
+def _get_uncertain_for_mailbox(email):
+    """Return the list of uncertain-email dicts persisted for this mailbox."""
+    state = _get_last_run() or {}
+    mb = next(
+        (m for m in state.get("mailboxes", []) if m.get("email_address") == email),
+        None,
+    )
+    if mb is None:
+        return []
+    return list(mb.get("uncertain_emails", []) or [])
+
+
+def _remove_uncertain_uid(email, uid):
+    """Drop a UID from the persisted uncertain list so it disappears from /review."""
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    for mb in state.get("mailboxes", []):
+        if mb.get("email_address") == email:
+            mb["uncertain_emails"] = [
+                e for e in mb.get("uncertain_emails", []) if e.get("uid") != uid
+            ]
+            break
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except OSError:
+        pass
+
+
+def _do_review_action(email, uid, action, sender_to_trust=None):
+    """Execute a per-row action from the review page.
+
+    action ∈ {"move_to_inbox", "delete_uncertain"}.
+    Returns (ok: bool, msg: str).
+    """
+    cfg = _get_mailbox_config(email)
+    if cfg is None:
+        return False, f"No IMAP config found for {email}."
+    spam_folder = cfg.get("spam_folder") or "Junk"
+    mail, err = _open_imap(cfg, folder=spam_folder)
+    if mail is None:
+        return False, err
+    try:
+        uid_b = uid.encode() if isinstance(uid, str) else uid
+        if action == "move_to_inbox":
+            copy_typ, _ = mail.uid("COPY", uid_b, "INBOX")
+            if copy_typ != "OK":
+                return False, "IMAP COPY to INBOX failed."
+            store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+            if store_typ != "OK":
+                return False, "IMAP STORE \\Deleted failed after COPY."
+            mail.expunge()
+            _remove_uncertain_uid(email, uid)
+            if sender_to_trust:
+                shared.add_allowlist_sender(email, sender_to_trust)
+            return True, "Moved to INBOX."
+        if action == "delete_uncertain":
+            store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+            if store_typ != "OK":
+                return False, "IMAP STORE \\Deleted failed."
+            mail.expunge()
+            _remove_uncertain_uid(email, uid)
+            return True, "Deleted."
+        return False, f"Unknown action: {action}"
+    except ssl.SSLError as e:
+        return False, f"SSL error: {e}"
+    except imaplib.IMAP4.error as e:
+        return False, f"IMAP error: {e}"
+    except Exception as e:
+        return False, f"Unexpected error: {e}"
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
+def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="ok"):
+    email_esc = escape(email)
+    token_q = urllib.parse.quote(token, safe="")
+    email_q = urllib.parse.quote(email, safe="")
+    form_action = f"/review?email={email_q}&token={token_q}"
+
+    banner_html = ""
+    if banner:
+        color = "var(--ok)" if banner_kind == "ok" else "var(--err)"
+        bg = "var(--ok-dim)" if banner_kind == "ok" else "var(--err-dim)"
+        border = "var(--ok-border)" if banner_kind == "ok" else "var(--err-border)"
+        banner_html = (
+            f"<div style='margin:0 0 1.25rem;padding:0.75rem 1rem;"
+            f"background:{bg};border:1px solid {border};border-left:3px solid {color};"
+            f"border-radius:var(--radius);color:{color};font-size:0.875rem'>"
+            f"{escape(banner)}</div>"
+        )
+
+    if not uncertain_list:
+        inner = (
+            "<div style='padding:1.25rem 1.5rem;background:var(--surface2);"
+            "border:1px solid var(--border);border-radius:var(--radius);color:var(--muted);"
+            "font-size:0.875rem'>No uncertain emails pending review. "
+            "Either the last digest had none, or all have already been reviewed.</div>"
+        )
+    else:
+        rows = ""
+        for em in uncertain_list:
+            uid = escape(em.get("uid", ""))
+            subject = escape(em.get("subject") or "(no subject)")
+            from_raw = em.get("from") or "unknown"
+            from_esc = escape(from_raw)
+            sender_addr = shared.extract_sender_address(from_raw)
+            sender_hidden = escape(sender_addr)
+            date_short = escape((em.get("date") or "")[:16])
+            reason = escape(em.get("ai_reason") or "")
+
+            row_forms = (
+                f"<form method='POST' action='{form_action}' style='display:inline;margin-right:0.35rem' "
+                f"onsubmit=\"return confirm('Move this email to INBOX and trust the sender for future digests?')\">"
+                f"<input type='hidden' name='action' value='move_to_inbox'>"
+                f"<input type='hidden' name='uid' value='{uid}'>"
+                f"<input type='hidden' name='sender' value='{sender_hidden}'>"
+                f"<input type='hidden' name='add_allowlist' value='1'>"
+                f"<button type='submit' style='background:var(--ok-dim);color:var(--ok);"
+                f"border:1px solid var(--ok-border);padding:0.3rem 0.7rem;border-radius:0.375rem;"
+                f"font-size:0.75rem;cursor:pointer;font-weight:500' "
+                f"title='Move to INBOX and add sender to allowlist'>"
+                f"&#10003; Trust &amp; move to INBOX</button></form>"
+                f"<form method='POST' action='{form_action}' style='display:inline' "
+                f"onsubmit=\"return confirm('Permanently delete this email?')\">"
+                f"<input type='hidden' name='action' value='delete_uncertain'>"
+                f"<input type='hidden' name='uid' value='{uid}'>"
+                f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
+                f"border:1px solid var(--err-border);padding:0.3rem 0.7rem;border-radius:0.375rem;"
+                f"font-size:0.75rem;cursor:pointer;font-weight:500'>"
+                f"&#10005; Delete</button></form>"
+            )
+
+            reason_html = (
+                f"<div style='color:var(--muted);font-size:0.7rem;margin-top:0.2rem'>{reason}</div>"
+                if reason else ""
+            )
+
+            rows += (
+                "<tr>"
+                f"<td style='padding:0.75rem;color:var(--muted);font-size:0.75rem;vertical-align:top;"
+                f"white-space:nowrap'>{date_short}</td>"
+                f"<td style='padding:0.75rem;vertical-align:top;font-family:var(--mono);font-size:0.75rem;"
+                f"color:var(--muted);word-break:break-word'>{from_esc}</td>"
+                f"<td style='padding:0.75rem;vertical-align:top;font-size:0.8125rem;word-break:break-word'>"
+                f"{subject}{reason_html}</td>"
+                f"<td style='padding:0.75rem;vertical-align:top;text-align:right;white-space:nowrap'>"
+                f"{row_forms}</td>"
+                "</tr>"
+            )
+        inner = (
+            "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
+            "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;"
+            "table-layout:fixed'>"
+            "<colgroup>"
+            "<col style='width:12%'><col style='width:26%'><col style='width:38%'><col style='width:24%'>"
+            "</colgroup>"
+            "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Date</th>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>From</th>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Subject / reason</th>"
+            "<th style='text-align:right;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Action</th>"
+            "</tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+
+    return (
+        "<!DOCTYPE html><html lang='en'><head>"
+        "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>Review uncertain \u2014 {email_esc}</title>"
+        f"<style>{_CSS}</style></head><body>"
+        "<header><div class='logo'><span class='logo-icon'>\U0001f6e1</span>"
+        "<span class='logo-text'>Spam <em style='color:var(--accent)'>Digest</em></span></div>"
+        f"<div style='color:var(--muted);font-size:0.8125rem'>Review \u2014 {email_esc}</div></header>"
+        "<main style='max-width:1024px;margin:2rem auto;padding:0 1.5rem'>"
+        f"{banner_html}"
+        f"<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.5rem'>Uncertain emails ({len(uncertain_list)})</h2>"
+        "<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:1rem'>"
+        "\u201cTrust &amp; move to INBOX\u201d moves the email and adds the sender to your allowlist "
+        "so future messages skip spam classification. \u201cDelete\u201d removes it permanently.</p>"
+        f"{inner}"
+        "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
+        "This page lists emails classified as Uncertain in the most recent digest run. "
+        "It refreshes after each digest run.</p>"
+        "</main></body></html>"
+    )
+
+
+def _handle_review_request(email, token, form=None):
+    ok, reason = _verify_mgmt_request(email, shared.PURPOSE_REVIEW, token)
+    if not ok:
+        body = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<title>Access denied</title></head>"
+            "<body style='font-family:sans-serif;background:#0f172a;color:#e2e8f0;"
+            "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0'>"
+            f"<div style='text-align:center;padding:2rem'><h2 style='color:#f87171'>Access denied</h2>"
+            f"<p style='color:#94a3b8'>{escape(reason)}</p></div></body></html>"
+        ).encode("utf-8")
+        return 403, body, {"Content-Type": "text/html; charset=utf-8"}
+
+    banner = None
+    banner_kind = "ok"
+
+    if form is not None:
+        action = (form.get("action", [""]) or [""])[0]
+        uid = (form.get("uid", [""]) or [""])[0]
+        if action in ("move_to_inbox", "delete_uncertain") and uid:
+            sender = None
+            if action == "move_to_inbox" and (form.get("add_allowlist", [""]) or [""])[0] == "1":
+                sender = (form.get("sender", [""]) or [""])[0].strip() or None
+            done, msg = _do_review_action(email, uid, action, sender_to_trust=sender)
+            banner = msg
+            banner_kind = "ok" if done else "err"
+            print(f"[review] action={action} email={email} uid={uid} ok={done} | {msg}", flush=True)
+        else:
+            banner = "Invalid action or missing UID."
+            banner_kind = "err"
+
+    uncertain_list = _get_uncertain_for_mailbox(email)
+    body = _render_review_page(email, token, uncertain_list, banner=banner, banner_kind=banner_kind).encode("utf-8")
+    return 200, body, {"Content-Type": "text/html; charset=utf-8"}
+
+
+# ---------------------------------------------------------------------------
 # Filters management page (/filters)
 # ---------------------------------------------------------------------------
 
@@ -914,12 +1152,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
-        elif self.path.startswith("/filters"):
-            qs = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(qs)
+        elif self.path.startswith("/filters") or self.path.startswith("/review"):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
             email = params.get("email", [""])[0]
             token = params.get("token", [""])[0]
-            status, body, headers = _handle_filters_request(email, token, form=None)
+            if parsed.path == "/filters":
+                status, body, headers = _handle_filters_request(email, token, form=None)
+            else:
+                status, body, headers = _handle_review_request(email, token, form=None)
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -966,7 +1207,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path == "/filters":
+        if path in ("/filters", "/review"):
             qs_params = urllib.parse.parse_qs(parsed.query)
             email = qs_params.get("email", [""])[0]
             token = qs_params.get("token", [""])[0]
@@ -977,7 +1218,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return
             raw_body = self.rfile.read(length) if length else b""
             form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
-            status, body, headers = _handle_filters_request(email, token, form=form)
+            if path == "/filters":
+                status, body, headers = _handle_filters_request(email, token, form=form)
+            else:
+                status, body, headers = _handle_review_request(email, token, form=form)
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
