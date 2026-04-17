@@ -64,10 +64,17 @@ def _rate_limit_check(ip):
         if len(dq) >= _RATE_LIMIT_MAX_HITS:
             return False
         dq.append(now)
-        # Periodic cleanup: drop empty buckets so the dict doesn't grow unbounded.
+        # Periodic cleanup: under broad scanning _rate_state would otherwise
+        # accumulate one bucket per source IP forever, because the hot
+        # path only drains the deque of the caller. When we cross the
+        # soft threshold we sweep every bucket: drop entries older than
+        # the window, then drop any bucket that ended up empty.
         if len(_rate_state) > 1024:
-            for k in [k for k, v in _rate_state.items() if not v]:
-                _rate_state.pop(k, None)
+            for k, v in list(_rate_state.items()):
+                while v and v[0] < cutoff:
+                    v.popleft()
+                if not v:
+                    _rate_state.pop(k, None)
     return True
 
 
@@ -450,6 +457,13 @@ def _do_review_action(email, uid, action, sender_to_trust=None):
     action ∈ {"move_to_inbox", "delete_uncertain"}.
     Returns (ok: bool, msg: str).
     """
+    # A valid review token only grants access to the set of uncertain
+    # messages persisted in the last run. Reject UIDs outside that set so
+    # a crafted request can't move or delete arbitrary spam-folder
+    # messages just because the holder has a review link.
+    allowed_uids = {str(e.get("uid", "")) for e in _get_uncertain_for_mailbox(email)}
+    if str(uid) not in allowed_uids:
+        return False, "This email is not in the current uncertain list."
     cfg = _get_mailbox_config(email)
     if cfg is None:
         return False, f"No IMAP config found for {email}."

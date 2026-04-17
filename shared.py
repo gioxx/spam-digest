@@ -137,6 +137,31 @@ def rotate_nonce(email, purpose):
     return mb[purpose]
 
 
+def new_nonce():
+    """Generate a fresh candidate nonce without persisting it.
+
+    Use together with commit_nonce() when you want to rotate only after a
+    downstream operation (like an email send) has succeeded: a transient
+    failure otherwise leaves the previous link revoked and no replacement
+    in the user's inbox.
+    """
+    return secrets.token_hex(16)
+
+
+def commit_nonce(email, purpose, nonce):
+    """Persist ``nonce`` as the current nonce for (email, purpose).
+
+    Typical flow: call new_nonce() to get a candidate, sign the token
+    with it, send the email, and — only if the send succeeded — call
+    commit_nonce() so the previous link is revoked atomically.
+    """
+    if purpose not in _VALID_PURPOSES:
+        raise ValueError(f"unknown token purpose: {purpose!r}")
+    nonces = _load_nonces()
+    nonces.setdefault(email, {})[purpose] = nonce
+    _save_nonces(nonces)
+
+
 # ---------------------------------------------------------------------------
 # Filters (user-defined blacklist rules) and allowlist (trusted senders).
 # Both are stored as {mailbox_email: {...}} dicts in separate JSON files so

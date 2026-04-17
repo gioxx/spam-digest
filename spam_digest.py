@@ -1057,6 +1057,12 @@ def main():
         delete_tokens = {}
         review_tokens = {}
         filters_tokens = {}
+        # Pending nonces: {(email, purpose): candidate_nonce}. We sign the
+        # tokens shipped in the digest with these candidates, but commit
+        # them to the persistent nonce store only after the digest email is
+        # successfully delivered. A transient SMTP/Resend failure therefore
+        # leaves the user's current link intact instead of revoking it.
+        pending_nonces = {}
         if web_base_url:
             secret = shared.load_or_create_secret()
             emails_for_mb = result.get("emails", [])
@@ -1065,17 +1071,16 @@ def main():
                     secret, result["email_address"], generated_at
                 )
             if any(e.get("ai_label") == "uncertain" for e in emails_for_mb):
-                # Dry-run must not revoke the user's real review link — only
-                # read the current nonce. Live runs rotate so each digest
-                # ships a fresh link and the previous one stops working.
+                # Dry-run must not revoke the user's real review link — reuse
+                # the current nonce as-is. Live runs generate a candidate
+                # that will only be committed on successful send.
                 if args.dry_run:
                     nonce = shared.get_or_create_nonce(
                         result["email_address"], shared.PURPOSE_REVIEW
                     )
                 else:
-                    nonce = shared.rotate_nonce(
-                        result["email_address"], shared.PURPOSE_REVIEW
-                    )
+                    nonce = shared.new_nonce()
+                    pending_nonces[(result["email_address"], shared.PURPOSE_REVIEW)] = nonce
                 review_tokens[result["email_address"]] = shared.sign_mgmt_token(
                     secret, shared.PURPOSE_REVIEW, result["email_address"], nonce
                 )
@@ -1089,9 +1094,8 @@ def main():
                         result["email_address"], shared.PURPOSE_FILTERS
                     )
                 else:
-                    fnonce = shared.rotate_nonce(
-                        result["email_address"], shared.PURPOSE_FILTERS
-                    )
+                    fnonce = shared.new_nonce()
+                    pending_nonces[(result["email_address"], shared.PURPOSE_FILTERS)] = fnonce
                 filters_tokens[result["email_address"]] = shared.sign_mgmt_token(
                     secret, shared.PURPOSE_FILTERS, result["email_address"], fnonce
                 )
@@ -1116,7 +1120,14 @@ def main():
             except OSError:
                 pass
         else:
-            result["sent"] = send_digest_email(html_body, subject, generated_at, to_address)
+            sent = send_digest_email(html_body, subject, generated_at, to_address)
+            result["sent"] = sent
+            if sent:
+                # Atomically rotate only after the email reached the MTA /
+                # API, revoking any previously issued links for these
+                # (mailbox, purpose) pairs.
+                for (addr, purpose), nonce in pending_nonces.items():
+                    shared.commit_nonce(addr, purpose, nonce)
 
     save_state(results, generated_at, total_count=total_count)
 
