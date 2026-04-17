@@ -28,7 +28,7 @@ _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
 STATE_FILE = shared.STATE_FILE
 SECRET_FILE = shared.SECRET_FILE
-APP_VERSION = "0.6.0"
+APP_VERSION = shared.APP_VERSION
 _DELETE_TOKEN_MAX_AGE_DAYS = 7
 _ACTIONS_LOG_FILE = os.path.join(shared.DATA_DIR, "actions.log")
 
@@ -565,14 +565,7 @@ def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="
             f"<tbody>{rows}</tbody></table>"
         )
 
-    return (
-        "<!DOCTYPE html><html lang='en'><head>"
-        "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>Review uncertain \u2014 {email_esc}</title>"
-        f"<style>{_CSS}</style></head><body>"
-        "<header><div class='logo'><span class='logo-icon'>\U0001f6e1</span>"
-        "<span class='logo-text'>Spam <em style='color:var(--accent)'>Digest</em></span></div>"
-        f"<div style='color:var(--muted);font-size:0.8125rem'>Review \u2014 {email_esc}</div></header>"
+    body_html = (
         "<main style='max-width:1024px;margin:2rem auto;padding:0 1.5rem'>"
         f"{banner_html}"
         f"<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.5rem'>Uncertain emails ({len(uncertain_list)})</h2>"
@@ -583,20 +576,24 @@ def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="
         "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
         "This page lists emails classified as Uncertain in the most recent digest run. "
         "It refreshes after each digest run.</p>"
-        "</main></body></html>"
+        "</main>"
+    )
+    return _page_shell(
+        page_title=f"Review uncertain — {email}",
+        subtitle_html=f"Review &nbsp;\u00b7&nbsp; {email_esc}",
+        body_html=body_html,
     )
 
 
 def _handle_review_request(email, token, form=None):
     ok, reason = _verify_mgmt_request(email, shared.PURPOSE_REVIEW, token)
     if not ok:
-        body = (
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<title>Access denied</title></head>"
-            "<body style='font-family:sans-serif;background:#0f172a;color:#e2e8f0;"
-            "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0'>"
-            f"<div style='text-align:center;padding:2rem'><h2 style='color:#f87171'>Access denied</h2>"
-            f"<p style='color:#94a3b8'>{escape(reason)}</p></div></body></html>"
+        body = _render_result_page(
+            page_title="Access denied — Spam Digest",
+            subtitle_html="Review &nbsp;\u00b7&nbsp; access denied",
+            status_word="Access denied",
+            status_color="var(--err)",
+            message=reason,
         ).encode("utf-8")
         return 403, body, {"Content-Type": "text/html; charset=utf-8"}
 
@@ -776,14 +773,7 @@ def _render_filters_page(email, token, rules, preview=None, banner=None, banner_
         "</form>"
     )
 
-    return (
-        "<!DOCTYPE html><html lang='en'><head>"
-        "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>Spam filters \u2014 {email_esc}</title>"
-        f"<style>{_CSS}</style></head><body>"
-        "<header><div class='logo'><span class='logo-icon'>\U0001f6e1</span>"
-        "<span class='logo-text'>Spam <em style='color:var(--accent)'>Digest</em></span></div>"
-        f"<div style='color:var(--muted);font-size:0.8125rem'>Filters \u2014 {email_esc}</div></header>"
+    body_html = (
         "<main style='max-width:960px;margin:2rem auto;padding:0 1.5rem'>"
         f"{banner_html}"
         "<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.75rem'>Current rules</h2>"
@@ -796,8 +786,13 @@ def _render_filters_page(email, token, rules, preview=None, banner=None, banner_
         f"{preview_html}{add_form}"
         "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
         "This page is accessible only via the link emailed to you. "
-        "To revoke the link, click \u201cRegenerate filters link\u201d on the dashboard.</p>"
-        "</main></body></html>"
+        "To revoke the link, open the dashboard and click \u201c\U0001f510 Filters\u201d next to this mailbox.</p>"
+        "</main>"
+    )
+    return _page_shell(
+        page_title=f"Spam filters — {email}",
+        subtitle_html=f"Filters &nbsp;\u00b7&nbsp; {email_esc}",
+        body_html=body_html,
     )
 
 
@@ -808,13 +803,12 @@ def _handle_filters_request(email, token, form=None):
     """
     ok, reason = _verify_mgmt_request(email, shared.PURPOSE_FILTERS, token)
     if not ok:
-        body = (
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<title>Access denied</title></head>"
-            "<body style='font-family:sans-serif;background:#0f172a;color:#e2e8f0;"
-            "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0'>"
-            f"<div style='text-align:center;padding:2rem'><h2 style='color:#f87171'>Access denied</h2>"
-            f"<p style='color:#94a3b8'>{escape(reason)}</p></div></body></html>"
+        body = _render_result_page(
+            page_title="Access denied — Spam Digest",
+            subtitle_html="Filters &nbsp;\u00b7&nbsp; access denied",
+            status_word="Access denied",
+            status_color="var(--err)",
+            message=reason,
         ).encode("utf-8")
         return 403, body, {"Content-Type": "text/html; charset=utf-8"}
 
@@ -921,32 +915,33 @@ def _do_regenerate_link(email, purpose, requester_ip):
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     subject = f"[spam-digest] New {purpose_label} link for {email}"
     url_esc = escape(url)
-    html_body = (
-        "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
-        "<body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "background:#f1f5f9;color:#1e293b;padding:24px;line-height:1.5\">"
-        "<div style='max-width:560px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;"
-        "border-radius:12px;padding:24px'>"
-        f"<h2 style='margin:0 0 12px;font-size:18px'>New {escape(purpose_label)} link</h2>"
-        f"<p style='margin:0 0 16px;color:#475569;font-size:14px'>"
-        f"A new management link was requested for <strong>{escape(email)}</strong>. "
+
+    body_html = (
+        "<div class='card'>"
+        f"<h2>\U0001f510 New {escape(purpose_label)} link</h2>"
+        f"<p>A new management link was requested for <strong>{escape(email)}</strong>. "
         "The previous link for this page has been revoked and will no longer work.</p>"
-        f"<p style='margin:0 0 16px;font-size:13px;color:#64748b'>"
-        f"Requested at {escape(now_str)} from <code>{escape(requester_ip or 'unknown')}</code>.</p>"
-        f"<p style='margin:0 0 24px'><a href='{url_esc}' "
-        "style='display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;"
-        "border-radius:6px;text-decoration:none;font-weight:600;font-size:14px'>"
-        f"Open {escape(purpose_label)}</a></p>"
-        "<p style='margin:0 0 6px;font-size:12px;color:#94a3b8'>If the button doesn\u2019t work, "
-        "paste this URL into your browser:</p>"
-        f"<p style='margin:0;font-size:11px;color:#475569;word-break:break-all;"
-        f"font-family:SFMono-Regular,Consolas,monospace;background:#f8fafc;"
-        f"border:1px solid #e2e8f0;border-radius:6px;padding:10px'>{url_esc}</p>"
-        "<p style='margin-top:24px;font-size:11px;color:#94a3b8'>"
-        "If you did not request this link, rotate it again from the dashboard \u2014 anyone "
-        "who obtained the old link can no longer use it.</p>"
-        "</div></body></html>"
+        f"<p style='font-size:12px;color:#64748b'>Requested on {escape(now_str)} from "
+        f"<code style='font-family:SFMono-Regular,Consolas,monospace'>{escape(requester_ip or 'unknown')}</code>.</p>"
+        f"<p><a class='btn-primary' href='{url_esc}'>Open {escape(purpose_label)}</a></p>"
+        "<p style='font-size:12px;color:#94a3b8;margin-bottom:4px'>"
+        "If the button doesn\u2019t work, paste this URL into your browser:</p>"
+        f"<div class='url-box'>{url_esc}</div>"
+        "<p class='fine-print'>If you did not request this link, rotate it again from the "
+        "dashboard \u2014 anyone who obtained the old link can no longer use it.</p>"
+        "</div>"
+        "<div class='tip-box'><strong>Why am I getting this email?</strong> "
+        "Management pages for spam-digest are not protected by a password. "
+        "Instead, each page has a long, signed URL that you can rotate at any time "
+        "from the dashboard. Rotating sends you a fresh link by email and immediately "
+        "disables the old one.</div>"
     )
+    html_body = shared.render_email_shell(
+        title=subject,
+        header_meta_html=f"Management link &nbsp;\u00b7&nbsp; {escape(email)}",
+        body_html=body_html,
+    )
+
     ok, err = shared.send_email(to_address, subject, html_body)
     if not ok:
         return False, f"Could not send email: {err}"
@@ -1047,6 +1042,72 @@ main > * { min-width: 0; }
 """
 
 _SHIELD_ICON = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
+_FAVICON_HREF = (
+    "data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' "
+    "viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%233b82f6\' stroke-width=\'1.75\' "
+    "stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath "
+    "d=\'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\'/%3E%3C/svg%3E"
+)
+
+
+def _page_shell(page_title, subtitle_html, body_html,
+                auto_refresh=False, extra_head="", extra_scripts=""):
+    """Wrap a dashboard-style web page in the shared header/footer.
+
+    All tokenised pages (/filters, /review, /action/delete-spam result) and
+    the dashboard itself render through this shell so they share favicon,
+    logo, version badge, global CSS and the GitHub footer.
+    """
+    refresh_meta = '<meta http-equiv="refresh" content="60">' if auto_refresh else ""
+    return (
+        '<!DOCTYPE html><html lang="en"><head>'
+        '<meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        f'{refresh_meta}'
+        f'<title>{escape(page_title)}</title>'
+        f'<link rel="icon" type="image/svg+xml" href="{_FAVICON_HREF}">'
+        f'<style>{_CSS}</style>'
+        f'{extra_head}'
+        '</head><body>'
+        f'<header><div class="logo">{_SHIELD_ICON}'
+        '<h1>Spam <em>Digest</em></h1>'
+        f"<span class='badge badge-muted' style='font-size:.68rem;margin-left:.25rem'>v{APP_VERSION}</span>"
+        '</div>'
+        f"<div class='meta'>{subtitle_html}</div></header>"
+        f'{body_html}'
+        '<button id="totop" onclick="window.scrollTo({top:0,behavior:\'smooth\'})" title="Back to top">&#9650;</button>'
+        '<script>'
+        "window.addEventListener('scroll',function(){var b=document.getElementById('totop');if(b)b.style.display=window.scrollY>300?'flex':'none';});"
+        f'{extra_scripts}'
+        '</script>'
+        '<footer><a href="https://github.com/gioxx/spam-digest" target="_blank" rel="noopener">gioxx/spam-digest</a> &nbsp;&middot;&nbsp; MIT License</footer>'
+        '</body></html>'
+    )
+
+
+def _render_result_page(page_title, subtitle_html, status_word, status_color, message,
+                        back_href="/", back_label="\u2190 Back to dashboard"):
+    """Render a centered single-card result page through _page_shell.
+
+    Used for /action/delete-spam outcomes and for 403 Access denied screens,
+    so every tokenised endpoint shares the dashboard chrome.
+    """
+    body_html = (
+        "<main style='max-width:560px;margin:4rem auto;padding:0 1.5rem'>"
+        "<div style='background:var(--surface2);border:1px solid var(--border);"
+        "border-radius:var(--radius);padding:2rem 2.25rem;text-align:center'>"
+        f"<h2 style='margin:0 0 .75rem;color:{status_color};font-size:1.25rem;font-weight:600'>"
+        f"{escape(status_word)}</h2>"
+        f"<p style='color:var(--muted);margin:.5rem 0 1.5rem;font-size:0.9rem'>{escape(message)}</p>"
+        f"<a href='{escape(back_href)}' style='color:var(--accent);text-decoration:none;font-size:0.875rem'>"
+        f"{escape(back_label)}</a>"
+        "</div></main>"
+    )
+    return _page_shell(
+        page_title=page_title,
+        subtitle_html=subtitle_html,
+        body_html=body_html,
+    )
 
 
 def _render_guide(active_vars):
@@ -1211,17 +1272,7 @@ def _render_html(notice=None, notice_kind="ok"):
             f"color:{color};font-size:.875rem'>{escape(notice)}</div>"
         )
 
-    return (
-        '<!DOCTYPE html><html lang="en"><head>'
-        '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        '<meta http-equiv="refresh" content="60">'
-        '<title>Spam Digest</title>'
-        '<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%233b82f6\' stroke-width=\'1.75\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpath d=\'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\'/%3E%3C/svg%3E">'
-        f'<style>{_CSS}</style></head><body>'
-        f'<header><div class="logo">{_SHIELD_ICON}'
-        f'<h1>Spam <em>Digest</em></h1>'
-        f"<span class='badge badge-muted' style='font-size:.68rem;margin-left:.25rem'>v{APP_VERSION}</span></div>"
-        f"<div class='meta'>Auto-refreshes every 60&thinsp;s<br><span id='clock'></span></div></header>"
+    body_html = (
         '<main>'
         f"{notice_html}"
         f"<div class='grid-2'>"
@@ -1250,15 +1301,24 @@ def _render_html(notice=None, notice_kind="ok"):
         f"{last_run_html}"
         f"{_render_guide(active_vars)}"
         '</main>'
-        "<button id='totop' onclick=\"window.scrollTo({top:0,behavior:'smooth'})\" title='Back to top'>&#9650;</button>"
-        '<script>'
-        "function _tick(){var d=new Date(),p=n=>n.toString().padStart(2,'0');document.getElementById('clock').textContent=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}"
+    )
+    extra_scripts = (
+        "function _tick(){var d=new Date(),p=n=>n.toString().padStart(2,'0');"
+        "var el=document.getElementById('clock');if(!el)return;"
+        "el.textContent=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}"
         "_tick();setInterval(_tick,1000);"
-        "window.addEventListener('scroll',function(){document.getElementById('totop').style.display=window.scrollY>300?'flex':'none';});"
-        "(function(){var d=document.querySelector('details');if(!d)return;if(localStorage.getItem('guide_open')==='1')d.open=true;d.addEventListener('toggle',function(){localStorage.setItem('guide_open',d.open?'1':'0');if(d.open)setTimeout(()=>d.scrollIntoView({behavior:'smooth',block:'start'}),50);});})();"
-        '</script>'
-        '<footer><a href="https://github.com/gioxx/spam-digest" target="_blank" rel="noopener">gioxx/spam-digest</a> &nbsp;&middot;&nbsp; MIT License</footer>'
-        '</body></html>'
+        "(function(){var d=document.querySelector('details');if(!d)return;"
+        "if(localStorage.getItem('guide_open')==='1')d.open=true;"
+        "d.addEventListener('toggle',function(){localStorage.setItem('guide_open',d.open?'1':'0');"
+        "if(d.open)setTimeout(()=>d.scrollIntoView({behavior:'smooth',block:'start'}),50);});})();"
+    )
+    subtitle_html = "Auto-refreshes every 60&thinsp;s<br><span id='clock'></span>"
+    return _page_shell(
+        page_title="Spam Digest",
+        subtitle_html=subtitle_html,
+        body_html=body_html,
+        auto_refresh=True,
+        extra_scripts=extra_scripts,
     )
 
 
@@ -1398,19 +1458,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 result="ok" if ok else "error", detail=msg,
             )
             status_word = "Done" if ok else "Error"
-            status_color = "#22c55e" if ok else "#f87171"
-            body = (
-                "<!DOCTYPE html><html lang='en'><head>"
-                "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>Delete spam — Spam Digest</title>"
-                "<style>body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;"
-                "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}"
-                ".box{background:#1e293b;border:1px solid #334155;border-radius:.75rem;padding:2rem 2.5rem;"
-                "max-width:480px;text-align:center}h2{margin:0 0 .75rem}p{color:#94a3b8;margin:.5rem 0 1.5rem}"
-                f"a{{color:#3b82f6;text-decoration:none}}</style></head><body>"
-                f"<div class='box'><h2 style='color:{status_color}'>{status_word}</h2>"
-                f"<p>{escape(msg)}</p>"
-                "<a href='/'>← Back to dashboard</a></div></body></html>"
+            status_color = "var(--ok)" if ok else "var(--err)"
+            body = _render_result_page(
+                page_title="Delete spam \u2014 Spam Digest",
+                subtitle_html="Delete confirmed spam",
+                status_word=status_word,
+                status_color=status_color,
+                message=msg,
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")

@@ -15,6 +15,8 @@ import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+APP_VERSION = "0.6.0"
+
 DATA_DIR = "/data"
 STATE_FILE = os.path.join(DATA_DIR, "spam_digest_last_run.json")
 SECRET_FILE = os.path.join(DATA_DIR, "spam_digest_secret.key")
@@ -327,6 +329,155 @@ def _parse_port(value, default):
         return v
     except (TypeError, ValueError):
         return default
+
+
+# ---------------------------------------------------------------------------
+# Shared email look & feel — the digest and every transactional email
+# (regenerate-link, future notifications) use the same shell so users
+# recognise them as coming from spam-digest.
+# ---------------------------------------------------------------------------
+
+EMAIL_CSS = """\
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    background: #f1f5f9; color: #1e293b;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px; line-height: 1.6;
+}
+a { color: #2563eb; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrapper { max-width: 860px; margin: 0 auto; padding: 28px 18px; }
+header {
+    background: #1e293b; border-radius: 12px;
+    padding: 22px 26px; margin-bottom: 16px; color: #f1f5f9;
+}
+header h1 { font-size: 20px; font-weight: 700; color: #f1f5f9; }
+header h1 em { font-style: normal; color: #60a5fa; }
+header .meta { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+.clean-banner {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 16px; color: #166534; font-size: 14px; font-weight: 500;
+}
+.summary-bar {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 12px 18px; margin-bottom: 16px; font-size: 13px; color: #475569;
+}
+.summary-bar strong { color: #1e293b; }
+.ai-summary {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 0; margin-bottom: 16px; overflow: hidden;
+}
+.ai-summary table { width: 100%; border-collapse: collapse; table-layout: auto; }
+.ai-summary td {
+    padding: 12px 16px; text-align: center; border-right: 1px solid #e2e8f0;
+    font-size: 13px;
+}
+.ai-summary td:last-child { border-right: none; }
+.ai-summary .ai-val { font-size: 22px; font-weight: 700; display: block; }
+.ai-summary .ai-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; margin-top: 2px; }
+.ai-val.total { color: #2563eb; }
+.ai-val.safe { color: #16a34a; }
+.ai-val.uncertain { color: #d97706; }
+.ai-val.spam-c { color: #dc2626; }
+.section { margin-bottom: 20px; }
+.section-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700;
+    margin-bottom: 8px;
+}
+.section-title.safe { color: #16a34a; }
+.section-title.uncertain { color: #d97706; }
+.section-title.spam { color: #dc2626; }
+.section-title.noai { color: #64748b; }
+.badge { display: inline-block; padding: 2px 7px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
+.badge-safe     { background: #dcfce7; color: #166534; }
+.badge-uncertain{ background: #fef9c3; color: #92400e; }
+.badge-spam     { background: #fee2e2; color: #991b1b; }
+.mailbox-block { margin-bottom: 20px; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }
+.mailbox-header {
+    background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+    padding: 10px 14px; font-size: 13px; font-weight: 600; color: #1e293b;
+}
+.mailbox-empty {
+    background: #fff; padding: 12px 14px; font-size: 13px; color: #94a3b8;
+}
+.mailbox-table-wrap { overflow: hidden; }
+.error-box {
+    background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px;
+    padding: 14px 18px; color: #991b1b; font-size: 13px; margin-bottom: 16px;
+}
+.tip-box {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 16px 20px; margin-top: 16px; font-size: 13px; color: #64748b;
+}
+.tip-box strong { color: #1e293b; }
+.card {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 20px 22px; margin-bottom: 16px;
+}
+.card h2 { font-size: 16px; font-weight: 700; color: #1e293b; margin-bottom: 10px; }
+.card p { font-size: 14px; color: #475569; margin-bottom: 10px; }
+.btn-primary {
+    display: inline-block; background: #2563eb; color: #fff; padding: 10px 20px;
+    border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;
+    margin: 6px 0 12px;
+}
+.url-box {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 10px 12px; font-family: SFMono-Regular, Consolas, monospace;
+    font-size: 11px; color: #475569; word-break: break-all; margin-bottom: 8px;
+}
+.fine-print { font-size: 11px; color: #94a3b8; margin-top: 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+thead th {
+    text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e8f0;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #64748b; font-weight: 600; background: #f8fafc;
+}
+tbody td {
+    padding: 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; background: #fff;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) td { background: #f8fafc; }
+.td-from { font-family: monospace; font-size: 12px; color: #64748b; overflow: hidden; }
+.from-name, .from-addr, .td-subject {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
+}
+.from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
+.from-addr { margin-top: 2px; color: #94a3b8; font-size: 10px; line-height: 1.25; }
+.td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
+.td-subject { font-weight: 500; color: #1e293b; }
+.td-reason { font-size: 11px; color: #94a3b8; line-height: 1.35; word-break: break-word; overflow-wrap: anywhere; }
+.col-date { width: 11%; }
+.col-from { width: 22%; }
+.col-subject { width: 35%; }
+.col-label { width: 10%; }
+.col-reason { width: 22%; }
+.mailbox-block table { min-width: 0; }
+footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 16px; }
+"""
+
+
+def render_email_shell(title, header_meta_html, body_html):
+    """Wrap body_html in the shared spam-digest email shell.
+
+    `title` goes in <title> and is escaped; `header_meta_html` is injected raw
+    into the header meta line so callers can embed links/spans; `body_html` is
+    injected raw inside the wrapper, between header and footer.
+    """
+    from html import escape as _esc
+    return (
+        '<!DOCTYPE html><html lang="en"><head>'
+        '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        f'<title>{_esc(title)}</title>'
+        f'<style>{EMAIL_CSS}</style></head><body>'
+        "<div class='wrapper'>"
+        "<header><h1>\U0001f6e1 Spam <em>Digest</em></h1>"
+        f"<div class='meta'>{header_meta_html}</div></header>"
+        f"{body_html}"
+        f"<footer>spam-digest v{_esc(APP_VERSION)} &nbsp;&middot;&nbsp; "
+        '<a href="https://github.com/gioxx/spam-digest">github.com/gioxx/spam-digest</a></footer>'
+        "</div></body></html>"
+    )
 
 
 def send_email(to_address, subject, html_body, from_address=None):

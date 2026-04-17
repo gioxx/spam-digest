@@ -31,7 +31,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-APP_VERSION = "0.6.0"
+APP_VERSION = shared.APP_VERSION
 STATE_FILE = shared.STATE_FILE
 SECRET_FILE = shared.SECRET_FILE
 DEFAULT_SPAM_FOLDER = "Junk"
@@ -523,110 +523,6 @@ def classify_with_ai(all_mailbox_results):
 # HTML digest email builder
 # ---------------------------------------------------------------------------
 
-_EMAIL_CSS = """\
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-    background: #f1f5f9; color: #1e293b;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size: 15px; line-height: 1.6;
-}
-a { color: #2563eb; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.wrapper { max-width: 860px; margin: 0 auto; padding: 28px 18px; }
-header {
-    background: #1e293b; border-radius: 12px;
-    padding: 22px 26px; margin-bottom: 16px; color: #f1f5f9;
-}
-header h1 { font-size: 20px; font-weight: 700; color: #f1f5f9; }
-header h1 em { font-style: normal; color: #60a5fa; }
-header .meta { font-size: 12px; color: #94a3b8; margin-top: 4px; }
-.clean-banner {
-    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px;
-    padding: 14px 18px; margin-bottom: 16px; color: #166534; font-size: 14px; font-weight: 500;
-}
-.summary-bar {
-    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-    padding: 12px 18px; margin-bottom: 16px; font-size: 13px; color: #475569;
-}
-.summary-bar strong { color: #1e293b; }
-.ai-summary {
-    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-    padding: 0; margin-bottom: 16px; overflow: hidden;
-}
-.ai-summary table { width: 100%; border-collapse: collapse; table-layout: auto; }
-.ai-summary td {
-    padding: 12px 16px; text-align: center; border-right: 1px solid #e2e8f0;
-    font-size: 13px;
-}
-.ai-summary td:last-child { border-right: none; }
-.ai-summary .ai-val { font-size: 22px; font-weight: 700; display: block; }
-.ai-summary .ai-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; margin-top: 2px; }
-.ai-val.total { color: #2563eb; }
-.ai-val.safe { color: #16a34a; }
-.ai-val.uncertain { color: #d97706; }
-.ai-val.spam-c { color: #dc2626; }
-.section { margin-bottom: 20px; }
-.section-title {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700;
-    margin-bottom: 8px;
-}
-.section-title.safe { color: #16a34a; }
-.section-title.uncertain { color: #d97706; }
-.section-title.spam { color: #dc2626; }
-.section-title.noai { color: #64748b; }
-.badge { display: inline-block; padding: 2px 7px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
-.badge-safe     { background: #dcfce7; color: #166534; }
-.badge-uncertain{ background: #fef9c3; color: #92400e; }
-.badge-spam     { background: #fee2e2; color: #991b1b; }
-.mailbox-block { margin-bottom: 20px; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }
-.mailbox-header {
-    background: #f8fafc; border-bottom: 1px solid #e2e8f0;
-    padding: 10px 14px; font-size: 13px; font-weight: 600; color: #1e293b;
-}
-.mailbox-empty {
-    background: #fff; padding: 12px 14px; font-size: 13px; color: #94a3b8;
-}
-.mailbox-table-wrap { overflow: hidden; }
-.error-box {
-    background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px;
-    padding: 14px 18px; color: #991b1b; font-size: 13px; margin-bottom: 16px;
-}
-.tip-box {
-    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-    padding: 16px 20px; margin-top: 16px; font-size: 13px; color: #64748b;
-}
-.tip-box strong { color: #1e293b; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
-thead th {
-    text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e8f0;
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: #64748b; font-weight: 600; background: #f8fafc;
-}
-tbody td {
-    padding: 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; background: #fff;
-}
-tbody tr:last-child td { border-bottom: none; }
-tbody tr:nth-child(even) td { background: #f8fafc; }
-.td-from { font-family: monospace; font-size: 12px; color: #64748b; overflow: hidden; }
-.from-name, .from-addr, .td-subject {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
-}
-.from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
-.from-addr { margin-top: 2px; color: #94a3b8; font-size: 10px; line-height: 1.25; }
-.td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
-.td-subject { font-weight: 500; color: #1e293b; }
-.td-reason { font-size: 11px; color: #94a3b8; line-height: 1.35; word-break: break-word; overflow-wrap: anywhere; }
-.col-date { width: 11%; }
-.col-from { width: 22%; }
-.col-subject { width: 35%; }
-.col-label { width: 10%; }
-.col-reason { width: 22%; }
-.mailbox-block table { min-width: 0; }
-footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 16px; }
-"""
-
-
-
 def _attr(s):
     """Escape a string for use inside an HTML attribute delimited by single quotes."""
     return escape(s).replace("'", "&#39;")
@@ -940,20 +836,12 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
         "This also trains your mail server's spam filter.</div>"
     )
 
-    return (
-        f'<!DOCTYPE html><html lang="en"><head>'
-        f'<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        f'<title>Spam Digest \u2014 {escape(generated_at)}</title>'
-        f'<style>{_EMAIL_CSS}</style></head><body>'
-        f"<div class='wrapper'>"
-        f"<header>"
-        f"<h1>\U0001f6e1 Spam <em>Digest</em></h1>"
-        f"<div class='meta'>Generated: {escape(generated_at)}{ai_note}</div>"
-        f"</header>"
-        f"{summary_html}{mailbox_blocks}{tip_html}"
-        f"<footer>spam-digest v{APP_VERSION} &nbsp;&middot;&nbsp; "
-        f'<a href="https://github.com/gioxx/spam-digest">github.com/gioxx/spam-digest</a></footer>'
-        f"</div></body></html>"
+    header_meta = f"Generated: {escape(generated_at)}{ai_note}"
+    body_html = f"{summary_html}{mailbox_blocks}{tip_html}"
+    return shared.render_email_shell(
+        title=f"Spam Digest — {generated_at}",
+        header_meta_html=header_meta,
+        body_html=body_html,
     )
 
 
