@@ -1529,8 +1529,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/action/run-now":
             ok, out = _run_digest("force_send")
-            print(f"[action/run-now] ok={ok} | {out[:200]}", flush=True)
-            _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out[:200])
+            print(f"[action/run-now] ok={ok} |\n{out}", flush=True)
+            _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out)
             location = "/?" + urllib.parse.urlencode(
                 [("n", "run_all_started" if ok else "run_error")]
             )
@@ -1547,10 +1547,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             valid_email = bool(email and _EMAIL_RE.match(email) and email in configured)
             if valid_email:
                 ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
-                print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
+                print(f"[action/run-mailbox] email={email} ok={ok} |\n{out}", flush=True)
             _log_action(
                 self._client_ip(), "run-mailbox", email=email,
-                result="ok" if ok else "error", detail=out[:200],
+                result="ok" if ok else "error", detail=out,
             )
             if not valid_email:
                 code, params_out = "unknown_mailbox", [("n", "unknown_mailbox")]
@@ -1563,8 +1563,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
         elif self.path == "/action/dry-run":
             ok, out = _run_digest("dry_run")
-            print(f"[action/dry-run] ok={ok} | {out[:200]}", flush=True)
-            _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out[:200])
+            print(f"[action/dry-run] ok={ok} |\n{out}", flush=True)
+            _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out)
             location = "/?" + urllib.parse.urlencode(
                 [("n", "dry_run_done" if ok else "run_error")]
             )
