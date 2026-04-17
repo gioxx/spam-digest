@@ -314,19 +314,21 @@ def fetch_spam_emails(cfg):
                 f"Could not open any spam folder. Tried: {', '.join(folder_candidates)}"
             )
 
-        res, data = mail.search(None, "ALL")
+        res, data = mail.uid("SEARCH", None, "ALL")
         if res != "OK":
             raise RuntimeError("IMAP SEARCH failed.")
 
         ids = data[0].split()
-        # Process newest first: reverse the list, cap at max_emails
+        # Process newest first: reverse the list, cap at max_emails.
+        # `ids` are UIDs (stable identifiers) — required so that later
+        # STORE/COPY/EXPUNGE actions by UID target the correct messages.
         ids = list(reversed(ids))[:max_emails]
         logging.info("Found %s spam email(s) in %s for %s.", len(ids), spam_folder, email_address)
 
         for num in ids:
             try:
-                # Fetch only headers (much faster than full body)
-                res, msg_data = mail.fetch(num, "(RFC822.HEADER RFC822.SIZE)")
+                # Fetch only headers (much faster than full body), by UID.
+                res, msg_data = mail.uid("FETCH", num, "(RFC822.HEADER RFC822.SIZE)")
                 if res != "OK" or not msg_data or not msg_data[0]:
                     continue
 

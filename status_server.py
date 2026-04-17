@@ -232,15 +232,17 @@ def _fetch_spam_headers(email, limit=200):
         return [], err
     out = []
     try:
-        res, data = mail.search(None, "ALL")
+        res, data = mail.uid("SEARCH", None, "ALL")
         if res != "OK":
             return [], "IMAP SEARCH failed"
+        # `ids` are UIDs — stable identifiers required for later STORE/COPY
+        # actions. Sequence numbers would shift on every EXPUNGE.
         ids = list(reversed(data[0].split()))[:limit]
         import email as _emlib
         import email.header as _emhdr
         for num in ids:
             try:
-                res, msg_data = mail.fetch(num, "(RFC822.HEADER)")
+                res, msg_data = mail.uid("FETCH", num, "(RFC822.HEADER)")
                 if res != "OK" or not msg_data or not msg_data[0]:
                     continue
                 header_bytes = msg_data[0][1]
