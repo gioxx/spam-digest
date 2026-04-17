@@ -971,7 +971,7 @@ def _do_regenerate_link(email, purpose, requester_ip):
 
     purpose_label = _PURPOSE_LABELS.get(purpose, purpose)
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    subject = f"[spam-digest] New {purpose_label} link for {email}"
+    subject = f"Spam Digest \u2014 New {purpose_label} link for {email}"
     url_esc = escape(url)
 
     body_html = (
