@@ -1063,6 +1063,8 @@ tbody tr:hover td { background: var(--surface2); }
 .empty { color: var(--muted); font-size: 0.875rem; padding: 0.5rem 0; }
 .btn-action { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.9rem; border-radius: 9999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 0.75rem; font-weight: 500; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s, background 0.15s; white-space: nowrap; }
 .btn-action:hover { border-color: var(--accent); color: var(--text); background: var(--accent-dim); text-decoration: none; }
+.mgmt-cell { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.mgmt-cell form { display: inline-flex; }
 #totop { position: fixed; bottom: 1.75rem; right: 1.75rem; width: 2.6rem; height: 2.6rem; border-radius: 50%; background: var(--accent); color: #fff; border: none; cursor: pointer; font-size: 1.2rem; display: none; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,.45); transition: background 0.2s, transform 0.15s; z-index: 999; line-height: 1; }
 #totop:hover { background: #2563eb; transform: translateY(-2px); }
 details { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
@@ -1233,39 +1235,37 @@ def _render_html(notice=None, notice_kind="ok"):
             if digest_to and digest_to != mb["email_address"]
             else f"<span style='color:var(--muted)'>{addr}</span>"
         )
+        run_btn = (
+            f"<a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
+            f" onclick=\"return confirm('Run digest for {addr} now?')\">\u25b6 Run</a>"
+        )
         if mgmt_ready:
-            mgmt_buttons = (
+            filters_btn = (
                 f"<form method='POST' action='/action/regenerate-link' style='display:inline'"
                 f" onsubmit=\"return confirm('Send a new filters link to the mailbox owner?\\n\\n"
                 f"The previous filters link for {addr} will stop working immediately.')\">"
                 f"<input type='hidden' name='email' value='{addr}'>"
                 f"<input type='hidden' name='purpose' value='{shared.PURPOSE_FILTERS}'>"
                 f"<button type='submit' class='btn-action' title='Rotate filters link and email it to digest_to'>"
-                f"\U0001f510 Filters</button></form> "
-                f"<form method='POST' action='/action/regenerate-link' style='display:inline'"
-                f" onsubmit=\"return confirm('Send a new review link to the mailbox owner?\\n\\n"
-                f"The previous review link for {addr} will stop working immediately.')\">"
-                f"<input type='hidden' name='email' value='{addr}'>"
-                f"<input type='hidden' name='purpose' value='{shared.PURPOSE_REVIEW}'>"
-                f"<button type='submit' class='btn-action' title='Rotate review link and email it to digest_to'>"
-                f"\U0001f510 Review</button></form>"
+                f"\U0001f510 Filters</button></form>"
             )
         else:
-            mgmt_buttons = (
+            filters_btn = (
                 "<span class='cell-muted' title='Requires WEB_BASE_URL and SMTP to be configured'"
-                " style='font-size:.72rem'>\u2014</span>"
+                " style='font-size:.72rem'>\U0001f510 Filters \u2014 needs WEB_BASE_URL + SMTP</span>"
             )
+        mgmt_cell = (
+            f"<div class='mgmt-cell'>{filters_btn}{run_btn}</div>"
+        )
         mb_rows += (
             f"<tr>"
             f"<td>{addr}</td>"
-            f"<td>{escape(str(mb['imap_server']))}</td>"
+            f"<td class='hide-mobile'>{escape(str(mb['imap_server']))}</td>"
             f"<td class='hide-mobile'>{escape(str(mb['imap_port']))}</td>"
-            f"<td><code>{escape(str(mb['spam_folder']))}</code></td>"
+            f"<td class='hide-mobile'><code>{escape(str(mb['spam_folder']))}</code></td>"
             f"<td class='hide-mobile'>{escape(str(mb['max_emails']))}</td>"
             f"<td>{digest_to_cell}</td>"
-            f"<td class='hide-mobile' style='white-space:nowrap'>{mgmt_buttons}</td>"
-            f"<td><a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
-            f" onclick=\"return confirm('Run digest for {addr} now?')\">\u25b6 Run</a></td>"
+            f"<td>{mgmt_cell}</td>"
             f"</tr>"
         )
 
@@ -1342,11 +1342,12 @@ def _render_html(notice=None, notice_kind="ok"):
         f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p>"
         f"<a class='btn-action' href='/action/run-now'"
         f" onclick=\"return confirm('Run digest for all mailboxes now?')\">\u25b6 Run all</a></div>"
-        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th class='hide-mobile'>Port</th><th>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th class='hide-mobile'>Management links</th><th></th></tr></thead>"
+        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th class='hide-mobile'>IMAP server</th><th class='hide-mobile'>Port</th><th class='hide-mobile'>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th>Management</th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div>"
         "<p style='color:var(--muted);font-size:.72rem;margin-top:.75rem;padding:0 .25rem'>"
-        "\U0001f510 buttons rotate the current link for that page and email the new URL to the mailbox owner. "
-        "The old link stops working immediately. Links are never shown on this dashboard.</p>"
+        "\U0001f510 <strong>Filters</strong> rotates the blacklist-filters link for that mailbox and emails the new URL to <em>digest_to</em>. "
+        "The old link stops working immediately. Links are never shown on this dashboard. "
+        "The <strong>review</strong> link for uncertain emails is delivered automatically inside each digest email that contains uncertain items.</p>"
         "</section>"
         f"{last_run_html}"
         f"{_render_guide(active_vars)}"

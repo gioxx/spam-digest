@@ -18,7 +18,7 @@ A lightweight status dashboard is always available on port 8080.
 - **AI pre-filter (optional)** — Anthropic Claude classifies each email by sender + subject only (no body sent, minimal cost)
 - **Blacklist filters (new in 0.6)** — per-mailbox rules (sender, domain, subject keyword) that auto-delete matching emails at digest time, with a dry-run preview before saving
 - **Allowlist auto-move (new in 0.6)** — trusted senders are moved from spam to INBOX on every run, no manual step
-- **Review page for uncertain emails (new in 0.6)** — tokenised web page to either delete an uncertain email or trust its sender (adds to allowlist) in one click
+- **Review page for uncertain emails (new in 0.6)** — tokenised web page to either delete an uncertain email or trust its sender (adds to allowlist) in one click. The link is delivered automatically inside the digest email whenever uncertain items are present, and is rotated at every digest run so previous links stop working on their own.
 - **Skip-if-empty** — default behaviour: if no spam, no email; configurable to always send
 - **Status dashboard** — dark-themed web UI showing last run, config, mailboxes, schedule
 - **Run-now button** — trigger a digest immediately from the dashboard
@@ -145,7 +145,8 @@ The status dashboard (`:8080`) shows:
 - Mailbox list
 - Last run results (per mailbox: spam count, status, duration)
 - **Run now** button — triggers an immediate `--force-send` run
-- Per-mailbox **🔐 Filters / 🔐 Review** buttons (require `WEB_BASE_URL` + SMTP) — rotate the link for that page and email the new URL to the mailbox owner (the old link is revoked immediately; the new URL is **never** shown on the dashboard)
+- Per-mailbox **🔐 Filters** button (requires `WEB_BASE_URL` + SMTP) — rotates the filters link and emails the new URL to the mailbox owner (the old link is revoked immediately; the new URL is **never** shown on the dashboard). The review link for uncertain emails is delivered automatically inside each digest email that contains uncertain items — no dashboard action required.
+- Per-mailbox **▶ Run** button — triggers a digest for that single mailbox on demand
 - Environment variables reference (collapsible)
 
 ---
@@ -157,14 +158,11 @@ Two tokenised pages let you manage your mailbox without exposing a login on the 
 - `/filters` — add, preview, and remove auto-delete rules of type `sender_exact`, `sender_domain`, or `subject_contains`. Matching emails are **deleted immediately** on the next digest run (in the same IMAP session), and reported in an "Auto-deleted" transparency section of the digest email.
 - `/review` — resolve emails Claude classified as **uncertain**. For each one you can either **Trust & move to INBOX** (moves the email *and* adds the sender to your allowlist so future messages skip classification) or **Delete** permanently.
 
-Both pages are protected by an HMAC-signed rotating token stored on disk at `/data/spam_digest_nonces.json`:
+Both pages are protected by an HMAC-signed rotating token stored on disk at `/data/spam_digest_nonces.json`.
 
-1. Open the dashboard.
-2. Click **🔐 Filters** or **🔐 Review** next to the mailbox you want to manage.
-3. Confirm the prompt. A fresh link is emailed to that mailbox's `digest_to` address.
-4. Open the email, click the link. Bookmark it if you want — it keeps working until you rotate again.
+**Filters link (manual rotation):** click **🔐 Filters** on the dashboard. A fresh link is emailed to the mailbox's `digest_to` address; the previous one is revoked immediately. Keep the email, bookmark the URL, and rotate again whenever you want.
 
-Rotating invalidates the previous link instantly, so lost or leaked URLs are easy to revoke.
+**Review link (automatic rotation):** every digest email that contains at least one uncertain item embeds a **🔍 Review uncertain emails** button. The token is rotated at every digest run, so the link from an older digest stops working as soon as a new one is generated. No manual action is required from the dashboard.
 
 Senders on the **allowlist** are always moved out of spam into INBOX on each digest run — even if you never click on `/review`. An "Auto-moved to INBOX" transparency section in the digest email lists every auto-moved message.
 

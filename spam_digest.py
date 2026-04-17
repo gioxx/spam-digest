@@ -693,7 +693,7 @@ def _auto_action_section(auto_deleted, auto_moved):
     return blocks
 
 
-def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None):
+def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None, review_tokens=None):
     ai_enabled = (
         os.getenv("AI_PROVIDER", "none").strip().lower() == "anthropic"
         and bool(os.getenv("AI_API_KEY"))
@@ -777,10 +777,26 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
                     f"{_table_for_emails(safe_e, True)}</div>"
                 )
             if uncertain_e:
+                review_btn = ""
+                if web_base_url and review_tokens and r["email_address"] in review_tokens:
+                    rtoken = review_tokens[r["email_address"]]
+                    addr_enc = urllib.parse.quote(r["email_address"], safe="")
+                    review_url = (
+                        f"{web_base_url}/review"
+                        f"?email={addr_enc}&token={rtoken}"
+                    )
+                    review_btn = (
+                        f"<div style='text-align:center;margin:10px 0 4px'>"
+                        f"<a href='{review_url}' style='display:inline-block;background:#2563eb;"
+                        f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
+                        f"font-weight:600;text-decoration:none;letter-spacing:0.01em'>"
+                        f"\U0001f50d Review {len(uncertain_e)} uncertain email(s)"
+                        f"</a></div>"
+                    )
                 sections += (
                     f"<div class='section' style='padding:12px 14px 0'>"
                     f"<div class='section-title uncertain'>\U0001f7e1 Uncertain ({len(uncertain_e)}) \u2014 manual review recommended</div>"
-                    f"{_table_for_emails(uncertain_e, True)}</div>"
+                    f"{_table_for_emails(uncertain_e, True)}{review_btn}</div>"
                 )
             if spam_e:
                 delete_btn = ""
@@ -1048,16 +1064,34 @@ def main():
 
         web_base_url = os.getenv("WEB_BASE_URL", "").strip().rstrip("/")
         delete_tokens = {}
+        review_tokens = {}
         if web_base_url:
             secret = shared.load_or_create_secret()
-            if any(e.get("ai_label") == "spam" for e in result.get("emails", [])):
+            emails_for_mb = result.get("emails", [])
+            if any(e.get("ai_label") == "spam" for e in emails_for_mb):
                 delete_tokens[result["email_address"]] = shared.sign_delete_token(
                     secret, result["email_address"], generated_at
+                )
+            if any(e.get("ai_label") == "uncertain" for e in emails_for_mb):
+                # Dry-run must not revoke the user's real review link — only
+                # read the current nonce. Live runs rotate so each digest
+                # ships a fresh link and the previous one stops working.
+                if args.dry_run:
+                    nonce = shared.get_or_create_nonce(
+                        result["email_address"], shared.PURPOSE_REVIEW
+                    )
+                else:
+                    nonce = shared.rotate_nonce(
+                        result["email_address"], shared.PURPOSE_REVIEW
+                    )
+                review_tokens[result["email_address"]] = shared.sign_mgmt_token(
+                    secret, shared.PURPOSE_REVIEW, result["email_address"], nonce
                 )
         html_body = build_html_digest(
             [result], generated_at,
             web_base_url=web_base_url or None,
             delete_tokens=delete_tokens or None,
+            review_tokens=review_tokens or None,
         )
 
         if args.dry_run:
