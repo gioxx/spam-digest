@@ -20,11 +20,17 @@ services:
       SPAM_FOLDER: Junk
       MAX_EMAILS: "100"
 
-      # --- SMTP ---
+      # --- Email delivery (digest + management links) ---
+      EMAIL_PROVIDER: smtp          # smtp | resend
+      # SMTP provider
       SMTP_HOST: smtp.example.com
       SMTP_PORT: "587"
       SMTP_USER: you@example.com
       SMTP_PASS: your-smtp-password
+      # Resend provider (used when EMAIL_PROVIDER=resend)
+      # RESEND_API_KEY: re_xxxxxxxxxxxxxxxxxxxxxx
+      # DIGEST_FROM must be on a verified Resend domain, or onboarding@resend.dev for quick tests
+      # DIGEST_FROM: digest@yourdomain.com
       # DIGEST_TO: other@example.com  # optional: override digest recipient (defaults to EMAIL_USER)
       SEND_IF_EMPTY: "false"
 

@@ -14,14 +14,11 @@ import imaplib
 import json
 import logging
 import os
-import smtplib
 import socket
 import ssl
 import sys
 import time
 import urllib.parse
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from html import escape
 
 import shared
@@ -868,46 +865,20 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
 # ---------------------------------------------------------------------------
 
 def send_digest_email(html_body, subject, generated_at, to_address):
-    smtp_host = os.getenv("SMTP_HOST", "").strip()
-    smtp_port = _parse_int(os.getenv("SMTP_PORT", "587"), 587, "SMTP_PORT")
-    smtp_user = os.getenv("SMTP_USER", "").strip()
-    smtp_pass = os.getenv("SMTP_PASS", "").strip()
-    digest_from = os.getenv("DIGEST_FROM", smtp_user).strip()
-
-    if not smtp_host:
-        logging.error("SMTP_HOST is not set. Cannot send digest email.")
-        return False
     if not to_address:
         logging.error("No recipient address for digest email.")
         return False
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = digest_from or smtp_user
-    msg["To"] = to_address
-    msg["X-Mailer"] = f"spam-digest/{APP_VERSION}"
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    try:
-        context = ssl.create_default_context()
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
-                if smtp_user and smtp_pass:
-                    server.login(smtp_user, smtp_pass)
-                server.sendmail(msg["From"], [to_address], msg.as_bytes())
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                if smtp_user and smtp_pass:
-                    server.login(smtp_user, smtp_pass)
-                server.sendmail(msg["From"], [to_address], msg.as_bytes())
-        logging.info("Digest email sent to %s.", to_address)
+    ok, err = shared.send_email(
+        to_address=to_address,
+        subject=subject,
+        html_body=html_body,
+        extra_headers={"X-Mailer": f"spam-digest/{APP_VERSION}"},
+    )
+    if ok:
+        logging.info("Digest email sent to %s via %s.", to_address, shared._email_provider())
         return True
-    except Exception as e:
-        logging.error("Failed to send digest email: %s", e)
-        return False
+    logging.error("Failed to send digest email: %s", err)
+    return False
 
 
 # ---------------------------------------------------------------------------

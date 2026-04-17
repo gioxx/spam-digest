@@ -12,6 +12,8 @@ import os
 import secrets
 import smtplib
 import ssl
+import urllib.error
+import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -484,12 +486,34 @@ def render_email_shell(title, header_meta_html, body_html):
     )
 
 
-def send_email(to_address, subject, html_body, from_address=None):
-    """Send a transactional HTML email via the configured SMTP server.
+def _email_provider():
+    """Return the selected email provider, normalised. Defaults to 'smtp'."""
+    return (os.getenv("EMAIL_PROVIDER") or "smtp").strip().lower()
 
-    Reads SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, DIGEST_FROM from env.
-    Returns (ok: bool, error_msg: str|None).
+
+def send_email(to_address, subject, html_body, from_address=None, extra_headers=None):
+    """Send a transactional HTML email via the configured provider.
+
+    Dispatches to SMTP (default) or the Resend HTTP API based on
+    EMAIL_PROVIDER. Returns (ok: bool, error_msg: str|None).
+
+    extra_headers is an optional dict of header-name -> value applied to
+    the outgoing message (e.g. {"X-Mailer": "spam-digest/0.6.0"}).
     """
+    if not to_address:
+        return False, "missing recipient"
+
+    provider = _email_provider()
+    if provider == "resend":
+        return _send_via_resend(to_address, subject, html_body, from_address, extra_headers)
+    if provider != "smtp":
+        logging.warning(
+            "Unknown EMAIL_PROVIDER='%s'. Falling back to SMTP.", provider
+        )
+    return _send_via_smtp(to_address, subject, html_body, from_address, extra_headers)
+
+
+def _send_via_smtp(to_address, subject, html_body, from_address, extra_headers):
     smtp_host = (os.getenv("SMTP_HOST") or "").strip()
     smtp_port = _parse_port(os.getenv("SMTP_PORT", "587"), 587)
     smtp_user = (os.getenv("SMTP_USER") or "").strip()
@@ -498,8 +522,6 @@ def send_email(to_address, subject, html_body, from_address=None):
 
     if not smtp_host:
         return False, "SMTP_HOST is not set"
-    if not to_address:
-        return False, "missing recipient"
     if not sender:
         return False, "no sender address (set DIGEST_FROM or SMTP_USER)"
 
@@ -507,6 +529,9 @@ def send_email(to_address, subject, html_body, from_address=None):
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = to_address
+    if extra_headers:
+        for k, v in extra_headers.items():
+            msg[k] = v
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
@@ -526,6 +551,57 @@ def send_email(to_address, subject, html_body, from_address=None):
                 server.sendmail(sender, [to_address], msg.as_bytes())
         return True, None
     except Exception as e:
-        logging.warning("shared.send_email failed: %s", e)
+        logging.warning("shared._send_via_smtp failed: %s", e)
+        return False, str(e)
+
+
+def _send_via_resend(to_address, subject, html_body, from_address, extra_headers):
+    api_key = (os.getenv("RESEND_API_KEY") or "").strip()
+    # For Resend, DIGEST_FROM must be an address on a verified domain
+    # (or the sandbox address onboarding@resend.dev for quick testing).
+    sender = (from_address or os.getenv("DIGEST_FROM") or "").strip()
+
+    if not api_key:
+        return False, "RESEND_API_KEY is not set"
+    if not sender:
+        return False, "no sender address (set DIGEST_FROM)"
+
+    payload = {
+        "from": sender,
+        "to": to_address,
+        "subject": subject,
+        "html": html_body,
+    }
+    if extra_headers:
+        # Resend accepts a headers dict; values must be strings.
+        payload["headers"] = {str(k): str(v) for k, v in extra_headers.items()}
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            # Resend returns 200 with a JSON body containing an id on success.
+            if 200 <= resp.status < 300:
+                return True, None
+            body = resp.read().decode("utf-8", errors="replace")[:500]
+            return False, f"Resend HTTP {resp.status}: {body}"
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        logging.warning("shared._send_via_resend HTTPError %s: %s", e.code, body)
+        return False, f"Resend HTTP {e.code}: {body or e.reason}"
+    except Exception as e:
+        logging.warning("shared._send_via_resend failed: %s", e)
         return False, str(e)
 

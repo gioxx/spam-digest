@@ -147,13 +147,22 @@ def _ai_status():
     return True, f"provider={provider}", model, ai_max
 
 
-def _smtp_status():
-    host = os.getenv("SMTP_HOST", "")
-    port = os.getenv("SMTP_PORT", "587")
-    user = os.getenv("SMTP_USER", "")
+def _email_status():
+    """Return (configured, provider, label, send_if_empty).
+
+    provider is 'smtp' or 'resend'; label is a short description suitable
+    for the dashboard stat box (e.g. the SMTP host, or 'Resend API').
+    """
+    provider = (os.getenv("EMAIL_PROVIDER") or "smtp").strip().lower()
     send_if_empty = os.getenv("SEND_IF_EMPTY", "false").strip().lower() in ("1", "true", "yes", "on")
+    if provider == "resend":
+        configured = bool((os.getenv("RESEND_API_KEY") or "").strip())
+        label = "Resend API" if configured else "Resend (key not set)"
+        return configured, "resend", label, send_if_empty
+    host = (os.getenv("SMTP_HOST") or "").strip()
     configured = bool(host)
-    return configured, host, port, user, send_if_empty
+    label = f"SMTP \u00b7 {host}" if configured else "Not configured"
+    return configured, "smtp", label, send_if_empty
 
 
 def _get_last_run():
@@ -867,7 +876,9 @@ def _handle_filters_request(email, token, form=None):
 
 
 def _smtp_is_configured():
-    return bool((os.getenv("SMTP_HOST") or "").strip())
+    """True when the currently selected email provider has its credentials set."""
+    configured, _, _, _ = _email_status()
+    return configured
 
 
 def _web_base_url():
@@ -1003,7 +1014,8 @@ def _active_env_vars():
     candidates = (
         "IMAP_SERVER", "IMAP_PORT", "IMAP_USE_SSL", "EMAIL_USER", "EMAIL_PASS",
         "EMAIL_ADDRESS", "SPAM_FOLDER", "MAX_EMAILS", "MAILBOX_CONFIGS",
-        "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DIGEST_TO", "DIGEST_FROM",
+        "EMAIL_PROVIDER", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS",
+        "RESEND_API_KEY", "DIGEST_TO", "DIGEST_FROM",
         "AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS",
         "SEND_IF_EMPTY", "SCHEDULE_MIN", "SCHEDULE_HOUR", "SCHEDULE_DAY",
         "WEB_PORT", "WEB_BASE_URL", "RUN_ON_START", "TZ",
@@ -1268,13 +1280,15 @@ def _render_guide(active_vars):
         row("SPAM_FOLDER",    "Junk",          "IMAP spam folder name. Auto-detects common aliases."),
         row("MAX_EMAILS",     "100",           "Max spam emails to include per mailbox per run."),
         row("MAILBOX_CONFIGS","\u2014",       "JSON array for multi-mailbox mode."),
-        section("SMTP / Digest email"),
-        row("SMTP_HOST",      "\u2014",       "<strong>Required</strong>. SMTP server hostname."),
+        section("Email delivery (digest + management links)"),
+        row("EMAIL_PROVIDER", "smtp",          "<code>smtp</code> (default) or <code>resend</code>. Picks which backend sends outgoing mail."),
+        row("SMTP_HOST",      "\u2014",       "<strong>Required for SMTP provider.</strong> SMTP server hostname."),
         row("SMTP_PORT",      "587",           "SMTP port. 465 = SSL, 587 = STARTTLS."),
         row("SMTP_USER",      "\u2014",       "SMTP login username."),
         row("SMTP_PASS",      "\u2014",       "SMTP login password."),
+        row("RESEND_API_KEY", "\u2014",       "<strong>Required for Resend provider.</strong> API key from resend.com (format <code>re_...</code>)."),
         row("DIGEST_TO",      "\u2014",        "Override recipient for single-mailbox mode. If unset, digest goes to EMAIL_USER."),
-        row("DIGEST_FROM",    "SMTP_USER",     "Sender address in the digest email."),
+        row("DIGEST_FROM",    "SMTP_USER",     "Sender address in the digest email. With Resend, must be on a verified domain (or <code>onboarding@resend.dev</code> for quick tests)."),
         row("SEND_IF_EMPTY",  "false",         "Send digest even when no spam found. Default: skip."),
         section("AI Classification (Anthropic)"),
         row("AI_PROVIDER",    "none",          "<code>anthropic</code> to enable, <code>none</code> to disable."),
@@ -1304,9 +1318,9 @@ def _render_html(notice=None, notice_kind="ok"):
     cron_expr, schedule_desc = _get_schedule()
     last_run = _get_last_run()
     ai_ok, ai_detail, *_ = _ai_status()
-    smtp_ok, smtp_host, smtp_port, smtp_user, send_if_empty = _smtp_status()
+    email_ok, email_provider, email_label, send_if_empty = _email_status()
     active_vars = _active_env_vars()
-    mgmt_ready = smtp_ok and bool(_web_base_url())
+    mgmt_ready = email_ok and bool(_web_base_url())
 
     mb_rows = ""
     for mb in mailboxes:
@@ -1394,8 +1408,7 @@ def _render_html(notice=None, notice_kind="ok"):
 
     ai_dot = "dot-ok" if ai_ok else "dot-muted"
     ai_label = "Enabled" if ai_ok else "Disabled"
-    smtp_dot = "dot-ok" if smtp_ok else "dot-muted"
-    smtp_label = smtp_host if smtp_ok else "Not configured"
+    email_dot = "dot-ok" if email_ok else "dot-muted"
 
     notice_html = ""
     if notice:
@@ -1417,8 +1430,8 @@ def _render_html(notice=None, notice_kind="ok"):
         f"<div class='mini-box'><span class='stat-label'>AI classification</span>"
         f"<span class='stat-value'><span class='dot {ai_dot}'></span> {ai_label}</span>"
         f"</div>"
-        f"<div class='mini-box'><span class='stat-label'>SMTP / digest email</span>"
-        f"<span class='stat-value'><span class='dot {smtp_dot}'></span> {escape(smtp_label)}</span></div>"
+        f"<div class='mini-box'><span class='stat-label'>Email provider</span>"
+        f"<span class='stat-value'><span class='dot {email_dot}'></span> {escape(email_label)}</span></div>"
         f"<div class='mini-box'><span class='stat-label'>Send if empty</span><span class='stat-value'>{'Yes' if send_if_empty else 'No (skip)'}</span></div>"
         f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'>{len(mailboxes)}</span></div>"
         f"</div></section></div>"

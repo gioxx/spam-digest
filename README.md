@@ -74,12 +74,14 @@ Open `http://localhost:8080` for the status dashboard.
 | `SPAM_FOLDER` | `Junk` | Spam folder name. Auto-detects common aliases. |
 | `MAX_EMAILS` | `100` | Max emails to include per mailbox per run. |
 | `MAILBOX_CONFIGS` | — | JSON array for multi-mailbox mode (see below). |
-| `SMTP_HOST` | — | SMTP hostname. **Required**. |
+| `EMAIL_PROVIDER` | `smtp` | Outgoing mail backend. `smtp` or `resend`. See [Email delivery](#email-delivery). |
+| `SMTP_HOST` | — | SMTP hostname. **Required when `EMAIL_PROVIDER=smtp`**. |
 | `SMTP_PORT` | `587` | `587` = STARTTLS, `465` = SSL. |
 | `SMTP_USER` | — | SMTP username. |
 | `SMTP_PASS` | — | SMTP password. |
+| `RESEND_API_KEY` | — | Resend API key (`re_...`). **Required when `EMAIL_PROVIDER=resend`**. |
 | `DIGEST_TO` | `EMAIL_USER` | Override digest recipient (single-mailbox). Per-mailbox: use `digest_to` field in `MAILBOX_CONFIGS`. |
-| `DIGEST_FROM` | `SMTP_USER` | Sender address. |
+| `DIGEST_FROM` | `SMTP_USER` | Sender address. **Required for Resend** (must be on a verified domain, or `onboarding@resend.dev` for testing). |
 | `SEND_IF_EMPTY` | `false` | Send digest even when no spam is found. |
 | `AI_PROVIDER` | `none` | `anthropic` to enable AI, `none` to disable. |
 | `AI_API_KEY` | — | Anthropic API key. Required if `AI_PROVIDER=anthropic`. |
@@ -92,6 +94,55 @@ Open `http://localhost:8080` for the status dashboard.
 | `WEB_PORT` | `8080` | Dashboard port. |
 | `WEB_BASE_URL` | _(unset)_ | Public base URL of the dashboard (e.g. `http://192.168.1.10:8080`). Required to include the "Delete confirmed spam" link in digest emails. |
 | `TZ` | `UTC` | Container timezone (e.g. `Europe/Rome`). |
+
+---
+
+## Email delivery
+
+spam-digest can send the daily digest (and management-link emails) through
+one of two backends, selected by `EMAIL_PROVIDER`:
+
+### `smtp` (default)
+
+Uses any SMTP server you own or have credentials for. Good for self-hosted
+setups — the message body never leaves your infrastructure except through
+your own mail server.
+
+```env
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587                 # 465 = SSL, 587 = STARTTLS
+SMTP_USER=you@example.com
+SMTP_PASS=your-smtp-password
+DIGEST_FROM=spam-digest@example.com   # optional, defaults to SMTP_USER
+```
+
+### `resend`
+
+Uses the [Resend](https://resend.com) HTTP API. No SMTP server required —
+just an API key. Handy if you don't want to run your own mail relay and are
+fine with an external service seeing the envelope of your digest emails.
+
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxxxx
+DIGEST_FROM=digest@yourdomain.com
+```
+
+Notes on Resend:
+
+- `DIGEST_FROM` **must** be an address on a domain you've verified in the
+  Resend dashboard (DNS: SPF + DKIM). For quick testing you can use the
+  sandbox address `onboarding@resend.dev`, but deliverability is limited.
+- The free tier (3k emails/month, 100/day) is more than enough for a
+  personal digest. No additional Python packages are required — spam-digest
+  talks to the Resend API directly over HTTPS.
+- The key never leaves the container; store it in your `.env` / compose
+  `environment` block, not in the repo.
+
+Switching providers is just a matter of flipping `EMAIL_PROVIDER` and
+providing the corresponding credentials — the rest of the config (digest
+recipient, schedule, mailboxes) is unchanged.
 
 ---
 
