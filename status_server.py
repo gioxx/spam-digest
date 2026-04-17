@@ -479,13 +479,9 @@ def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="
 
     banner_html = ""
     if banner:
-        color = "var(--ok)" if banner_kind == "ok" else "var(--err)"
-        bg = "var(--ok-dim)" if banner_kind == "ok" else "var(--err-dim)"
-        border = "var(--ok-border)" if banner_kind == "ok" else "var(--err-border)"
+        kind_class = "ok" if banner_kind == "ok" else "err"
         banner_html = (
-            f"<div style='margin:0 0 1.25rem;padding:0.75rem 1rem;"
-            f"background:{bg};border:1px solid {border};border-left:3px solid {color};"
-            f"border-radius:var(--radius);color:{color};font-size:0.875rem'>"
+            f"<div class='page-notice {kind_class}' data-auto-dismiss='1'>"
             f"{escape(banner)}</div>"
         )
 
@@ -650,13 +646,9 @@ def _render_filters_page(email, token, rules, preview=None, banner=None, banner_
 
     banner_html = ""
     if banner:
-        color = "var(--ok)" if banner_kind == "ok" else "var(--err)"
-        bg = "var(--ok-dim)" if banner_kind == "ok" else "var(--err-dim)"
-        border = "var(--ok-border)" if banner_kind == "ok" else "var(--err-border)"
+        kind_class = "ok" if banner_kind == "ok" else "err"
         banner_html = (
-            f"<div style='margin:0 0 1.25rem;padding:0.75rem 1rem;"
-            f"background:{bg};border:1px solid {border};border-left:3px solid {color};"
-            f"border-radius:var(--radius);color:{color};font-size:0.875rem'>"
+            f"<div class='page-notice {kind_class}' data-auto-dismiss='1'>"
             f"{escape(banner)}</div>"
         )
 
@@ -793,7 +785,7 @@ def _render_filters_page(email, token, rules, preview=None, banner=None, banner_
         f"{preview_html}{add_form}"
         "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
         "This page is accessible only via the link emailed to you. "
-        "To revoke the link, open the dashboard and click \u201c\U0001f510 Filters\u201d next to this mailbox.</p>"
+        "To revoke the link, open the dashboard and click \u201c\u2699\ufe0e Filters\u201d next to this mailbox.</p>"
         "</main>"
     )
     return _page_shell(
@@ -1034,7 +1026,11 @@ _CSS = """\
 body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.9375rem; line-height: 1.6; min-height: 100vh; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; position: sticky; top: 0; z-index: 100; backdrop-filter: saturate(140%) blur(6px); }
+.page-notice { margin: 0 0 1rem; padding: .75rem 1rem; border-radius: .5rem; font-size: .875rem; border: 1px solid transparent; border-left-width: 3px; transition: opacity .35s ease, transform .35s ease, margin .35s ease, padding .35s ease, max-height .35s ease; overflow: hidden; }
+.page-notice.ok  { background: var(--ok-dim);  border-color: var(--ok-border);  border-left-color: var(--ok);  color: var(--ok); }
+.page-notice.err { background: var(--err-dim); border-color: var(--err-border); border-left-color: var(--err); color: var(--err); }
+.page-notice.dismissing { opacity: 0; transform: translateY(-4px); max-height: 0; margin: 0; padding-top: 0; padding-bottom: 0; border-width: 0; }
 .logo { display: flex; align-items: center; gap: 0.6rem; color: inherit; text-decoration: none; }
 .logo:hover { text-decoration: none; }
 .logo:hover h1 em { opacity: 0.85; }
@@ -1209,6 +1205,10 @@ def _page_shell(page_title, subtitle_html, body_html,
         '<button id="totop" onclick="window.scrollTo({top:0,behavior:\'smooth\'})" title="Back to top">&#9650;</button>'
         '<script>'
         "window.addEventListener('scroll',function(){var b=document.getElementById('totop');if(b)b.style.display=window.scrollY>300?'flex':'none';});"
+        "(function(){var ns=document.querySelectorAll('.page-notice[data-auto-dismiss]');"
+        "if(!ns.length)return;"
+        "ns.forEach(function(n){setTimeout(function(){n.classList.add('dismissing');"
+        "setTimeout(function(){if(n.parentNode)n.parentNode.removeChild(n);},400);},5000);});})();"
         f'{_MODAL_JS}'
         f'{extra_scripts}'
         '</script>'
@@ -1329,12 +1329,12 @@ def _render_html(notice=None, notice_kind="ok"):
                 f"<input type='hidden' name='email' value='{addr}'>"
                 f"<input type='hidden' name='purpose' value='{shared.PURPOSE_FILTERS}'>"
                 f"<button type='submit' class='btn-action' title='Rotate filters link and email it to digest_to'>"
-                f"\U0001f510 Filters</button></form>"
+                f"\u2699\ufe0e Filters</button></form>"
             )
         else:
             filters_btn = (
                 "<span class='cell-muted' title='Requires WEB_BASE_URL and SMTP to be configured'"
-                " style='font-size:.72rem'>\U0001f510 Filters \u2014 needs WEB_BASE_URL + SMTP</span>"
+                " style='font-size:.72rem'>\u2699\ufe0e Filters \u2014 needs WEB_BASE_URL + SMTP</span>"
             )
         mgmt_cell = (
             f"<div class='mgmt-cell'>{filters_btn}{run_btn}</div>"
@@ -1395,13 +1395,10 @@ def _render_html(notice=None, notice_kind="ok"):
 
     notice_html = ""
     if notice:
-        color = "var(--ok)" if notice_kind == "ok" else "var(--err)"
-        bg = "var(--ok-dim)" if notice_kind == "ok" else "var(--err-dim)"
-        border = "var(--ok-border)" if notice_kind == "ok" else "var(--err-border)"
+        kind_class = "ok" if notice_kind == "ok" else "err"
         notice_html = (
-            f"<div style='margin:0 0 1rem;padding:.75rem 1rem;background:{bg};"
-            f"border:1px solid {border};border-left:3px solid {color};border-radius:.5rem;"
-            f"color:{color};font-size:.875rem'>{escape(notice)}</div>"
+            f"<div class='page-notice {kind_class}' data-auto-dismiss='1'>"
+            f"{escape(notice)}</div>"
         )
 
     body_html = (
@@ -1428,7 +1425,7 @@ def _render_html(notice=None, notice_kind="ok"):
         f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th class='hide-mobile'>IMAP server</th><th class='hide-mobile'>Port</th><th class='hide-mobile'>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th>Management</th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div>"
         "<p style='color:var(--muted);font-size:.72rem;margin-top:.75rem;padding:0 .25rem'>"
-        "\U0001f510 <strong>Filters</strong> rotates the blacklist-filters link for that mailbox and emails the new URL to <em>digest_to</em>. "
+        "\u2699\ufe0e <strong>Filters</strong> rotates the blacklist-filters link for that mailbox and emails the new URL to <em>digest_to</em>. "
         "The old link stops working immediately. Links are never shown on this dashboard. "
         "The <strong>review</strong> link for uncertain emails is delivered automatically inside each digest email that contains uncertain items.</p>"
         "</section>"
