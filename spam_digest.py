@@ -829,6 +829,17 @@ def save_state(results, generated_at, total_count):
             e["uid"] for e in r.get("emails", [])
             if e.get("ai_label") == "spam"
         ]
+        uncertain_entries = [
+            {
+                "uid": e["uid"],
+                "subject": e.get("subject") or "",
+                "from": e.get("from") or "",
+                "date": e.get("date") or "",
+                "ai_reason": e.get("ai_reason") or "",
+            }
+            for e in r.get("emails", [])
+            if e.get("ai_label") == "uncertain"
+        ]
         existing_mailboxes[addr] = {
             "email_address": addr,
             "digest_to": r.get("digest_to") or addr,
@@ -840,6 +851,7 @@ def save_state(results, generated_at, total_count):
             "sent": r.get("sent", False),
             "last_run": generated_at,
             "confirmed_spam_uids": confirmed_uids,
+            "uncertain_emails": uncertain_entries,
         }
 
     merged_mailboxes = list(existing_mailboxes.values())

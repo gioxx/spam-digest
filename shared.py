@@ -14,6 +14,8 @@ DATA_DIR = "/data"
 STATE_FILE = os.path.join(DATA_DIR, "spam_digest_last_run.json")
 SECRET_FILE = os.path.join(DATA_DIR, "spam_digest_secret.key")
 NONCES_FILE = os.path.join(DATA_DIR, "spam_digest_nonces.json")
+FILTERS_FILE = os.path.join(DATA_DIR, "spam_digest_filters.json")
+ALLOWLIST_FILE = os.path.join(DATA_DIR, "spam_digest_allowlist.json")
 
 # Purposes for management tokens. Keep these short and stable — they are
 # part of the signed payload, so changing a value invalidates all outstanding
@@ -124,3 +126,68 @@ def rotate_nonce(email, purpose):
     mb[purpose] = secrets.token_hex(16)
     _save_nonces(nonces)
     return mb[purpose]
+
+
+# ---------------------------------------------------------------------------
+# Filters (user-defined blacklist rules) and allowlist (trusted senders).
+# Both are stored as {mailbox_email: {...}} dicts in separate JSON files so
+# each mailbox's data stays clearly scoped.
+# ---------------------------------------------------------------------------
+
+# Filter rule schema, per mailbox:
+#   {
+#     "rules": [
+#       {"id": "r_xxxx", "type": "sender_exact"|"sender_domain"|"subject_contains",
+#        "value": "...", "added_at": "YYYY-MM-DD HH:MM"}
+#     ]
+#   }
+FILTER_TYPES = ("sender_exact", "sender_domain", "subject_contains")
+
+
+def _load_json_dict(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    except Exception:
+        pass
+    return {}
+
+
+def _save_json_dict(path, data):
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    except OSError:
+        pass
+
+
+def load_filters():
+    return _load_json_dict(FILTERS_FILE)
+
+
+def save_filters(data):
+    _save_json_dict(FILTERS_FILE, data)
+
+
+def load_allowlist():
+    return _load_json_dict(ALLOWLIST_FILE)
+
+
+def save_allowlist(data):
+    _save_json_dict(ALLOWLIST_FILE, data)
+
+
+def get_filter_rules(mailbox_email):
+    """Return the list of filter rule dicts for a mailbox (empty list if none)."""
+    return load_filters().get(mailbox_email, {}).get("rules", [])
+
+
+def get_allowlist_senders(mailbox_email):
+    """Return the set of allowlisted sender addresses for a mailbox (lowercased)."""
+    entry = load_allowlist().get(mailbox_email, {})
+    return {s.lower() for s in entry.get("senders", []) if s}
+
