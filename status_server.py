@@ -881,26 +881,70 @@ _PURPOSE_LABELS = {
 }
 
 
+_NOTICE_CODES = {
+    "link_sent":       ("ok",  "Link sent to {to}."),
+    "unknown_mailbox": ("err", "Unknown or invalid mailbox."),
+    "invalid_purpose": ("err", "Invalid link purpose."),
+    "unknown_purpose": ("err", "Unknown link purpose."),
+    "no_to":           ("err", "Mailbox has no digest_to configured."),
+    "no_base_url":     ("err", "WEB_BASE_URL is not set — the dashboard cannot build a link."),
+    "no_smtp":         ("err", "SMTP is not configured — cannot send the link by email."),
+    "smtp_error":      ("err", "Could not send email. See container logs for details."),
+}
+
+
+def _resolve_notice(code, extra_qs):
+    """Translate a whitelisted notice code into (text, kind) or (None, 'ok').
+
+    `extra_qs` is the raw parsed-qs dict (maps str -> list[str]). Only fields
+    that are both expected by the template AND validated here are embedded
+    into the final text — nothing else from the query string is ever echoed.
+    """
+    spec = _NOTICE_CODES.get(code or "")
+    if not spec:
+        return None, "ok"
+    kind, template = spec
+
+    if "{to}" in template:
+        to_raw = (extra_qs.get("to", [""]) or [""])[0][:254]
+        configured = set()
+        for mb in _get_mailbox_configs():
+            addr = (mb.get("email_address") or "").strip()
+            dto = (mb.get("digest_to") or "").strip()
+            if addr:
+                configured.add(addr)
+            if dto:
+                configured.add(dto)
+        if to_raw and _EMAIL_RE.match(to_raw) and to_raw in configured:
+            return template.format(to=to_raw), kind
+        # fall back: strip the placeholder rather than echoing attacker input
+        return template.replace(" to {to}", "").replace("{to}", ""), kind
+
+    return template, kind
+
+
 def _do_regenerate_link(email, purpose, requester_ip):
     """Rotate the nonce, build a new tokenized URL and email it to digest_to.
 
-    Returns (ok: bool, user_facing_msg: str). The URL is NEVER returned to
+    Returns (ok: bool, code: str, extra: dict). `code` is a stable machine-
+    readable identifier (see _NOTICE_CODES); `extra` may carry validated
+    fields like `to` for the success message. The URL is NEVER returned to
     the caller — it is delivered only in the email body so that a drive-by
     visitor of the dashboard cannot obtain it.
     """
     if purpose not in (shared.PURPOSE_FILTERS, shared.PURPOSE_REVIEW):
-        return False, "unknown purpose"
+        return False, "unknown_purpose", {}
     cfg = _get_mailbox_config(email)
     if cfg is None:
-        return False, f"Unknown mailbox: {email}"
+        return False, "unknown_mailbox", {}
     to_address = (cfg.get("digest_to") or "").strip() or email
     if not to_address:
-        return False, "mailbox has no digest_to configured"
+        return False, "no_to", {}
     base = _web_base_url()
     if not base:
-        return False, "WEB_BASE_URL is not set — the dashboard cannot build a link"
+        return False, "no_base_url", {}
     if not _smtp_is_configured():
-        return False, "SMTP is not configured — cannot send the link by email"
+        return False, "no_smtp", {}
 
     secret = shared.load_or_create_secret()
     new_nonce = shared.rotate_nonce(email, purpose)
@@ -944,8 +988,9 @@ def _do_regenerate_link(email, purpose, requester_ip):
 
     ok, err = shared.send_email(to_address, subject, html_body)
     if not ok:
-        return False, f"Could not send email: {err}"
-    return True, f"Link sent to {to_address}."
+        print(f"[regenerate-link] smtp error: {err}", flush=True)
+        return False, "smtp_error", {}
+    return True, "link_sent", {"to": to_address}
 
 
 def _active_env_vars():
@@ -976,10 +1021,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-.logo { display: flex; align-items: center; gap: 0.6rem; }
+.logo { display: flex; align-items: center; gap: 0.6rem; color: inherit; text-decoration: none; }
+.logo:hover { text-decoration: none; }
+.logo:hover h1 em { opacity: 0.85; }
 .logo svg { color: var(--accent); flex-shrink: 0; }
 .logo h1 { font-size: 1.1rem; font-weight: 600; }
-.logo h1 em { font-style: normal; color: var(--accent); }
+.logo h1 em { font-style: normal; color: var(--accent); transition: opacity 0.15s; }
 .meta { font-size: 0.78rem; color: var(--muted); text-align: right; line-height: 1.5; }
 main { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; display: grid; gap: 1.25rem; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; }
@@ -1069,10 +1116,10 @@ def _page_shell(page_title, subtitle_html, body_html,
         f'<style>{_CSS}</style>'
         f'{extra_head}'
         '</head><body>'
-        f'<header><div class="logo">{_SHIELD_ICON}'
+        f'<header><a href="/" class="logo" title="Back to dashboard">{_SHIELD_ICON}'
         '<h1>Spam <em>Digest</em></h1>'
         f"<span class='badge badge-muted' style='font-size:.68rem;margin-left:.25rem'>v{APP_VERSION}</span>"
-        '</div>'
+        '</a>'
         f"<div class='meta'>{subtitle_html}</div></header>"
         f'{body_html}'
         '<button id="totop" onclick="window.scrollTo({top:0,behavior:\'smooth\'})" title="Back to top">&#9650;</button>'
@@ -1311,6 +1358,8 @@ def _render_html(notice=None, notice_kind="ok"):
         "if(localStorage.getItem('guide_open')==='1')d.open=true;"
         "d.addEventListener('toggle',function(){localStorage.setItem('guide_open',d.open?'1':'0');"
         "if(d.open)setTimeout(()=>d.scrollIntoView({behavior:'smooth',block:'start'}),50);});})();"
+        "(function(){try{if(window.history&&window.history.replaceState&&window.location.search){"
+        "window.history.replaceState(null,'',window.location.pathname);}}catch(e){}})();"
     )
     subtitle_html = "Auto-refreshes every 60&thinsp;s<br><span id='clock'></span>"
     return _page_shell(
@@ -1379,10 +1428,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if parsed.path in ("/", "/status", "/index.html"):
             qs = urllib.parse.parse_qs(parsed.query)
-            raw_notice = qs.get("notice", [""])[0][:200]
-            notice_kind = "ok" if qs.get("kind", ["ok"])[0] != "err" else "err"
+            code = (qs.get("n", [""]) or [""])[0]
+            notice_text, notice_kind = _resolve_notice(code, qs)
             body = _render_html(
-                notice=raw_notice or None,
+                notice=notice_text,
                 notice_kind=notice_kind,
             ).encode("utf-8")
             self.send_response(200)
@@ -1494,27 +1543,27 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             requester_ip = self._client_ip()
 
             configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+            extra = {}
             if not (email and _EMAIL_RE.match(email) and email in configured):
-                ok, msg = False, "Unknown or invalid mailbox."
+                ok, code = False, "unknown_mailbox"
             elif purpose not in (shared.PURPOSE_FILTERS, shared.PURPOSE_REVIEW):
-                ok, msg = False, "Invalid link purpose."
+                ok, code = False, "invalid_purpose"
             else:
-                ok, msg = _do_regenerate_link(email, purpose, requester_ip)
+                ok, code, extra = _do_regenerate_link(email, purpose, requester_ip)
             print(
                 f"[action/regenerate-link] email={email} purpose={purpose} "
-                f"ip={requester_ip} ok={ok} | {msg}",
+                f"ip={requester_ip} ok={ok} code={code}",
                 flush=True,
             )
             _log_action(
                 requester_ip, "regenerate-link", email=email,
                 result="ok" if ok else "error",
-                detail=f"purpose={purpose} | {msg}",
+                detail=f"purpose={purpose} code={code}",
             )
-            kind = "ok" if ok else "err"
-            location = (
-                "/?notice=" + urllib.parse.quote(msg, safe="")
-                + "&kind=" + kind
-            )
+            params = [("n", code)]
+            if "to" in extra:
+                params.append(("to", extra["to"]))
+            location = "/?" + urllib.parse.urlencode(params)
             self.send_response(303)
             self.send_header("Location", location)
             self.send_header("Content-Length", "0")
