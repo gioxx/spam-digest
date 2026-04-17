@@ -606,6 +606,10 @@ def _send_via_resend(to_address, subject, html_body, from_address, extra_headers
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Resend's API is fronted by Cloudflare; the default
+            # Python-urllib/X.Y UA gets blocked with error 1010.
+            "User-Agent": f"spam-digest/{APP_VERSION} (+https://github.com/gioxx/spam-digest)",
         },
     )
     try:
