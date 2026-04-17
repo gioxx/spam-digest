@@ -8,6 +8,7 @@ WORKDIR /app
 
 COPY spam_digest.py /app/
 COPY status_server.py /app/
+COPY shared.py /app/
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 

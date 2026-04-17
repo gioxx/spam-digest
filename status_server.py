@@ -6,7 +6,6 @@ Listens on WEB_PORT (default 8080).
 """
 
 import datetime
-import hashlib
 import hmac
 import http.server
 import imaplib
@@ -20,10 +19,12 @@ import sys
 import urllib.parse
 from html import escape
 
+import shared
+
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
-STATE_FILE = "/data/spam_digest_last_run.json"
-SECRET_FILE = "/data/spam_digest_secret.key"
+STATE_FILE = shared.STATE_FILE
+SECRET_FILE = shared.SECRET_FILE
 APP_VERSION = "0.3.1"
 _DELETE_TOKEN_MAX_AGE_DAYS = 7
 
@@ -116,17 +117,9 @@ def _get_last_run():
         return None
 
 
-def _load_secret():
-    try:
-        with open(SECRET_FILE) as f:
-            return bytes.fromhex(f.read().strip())
-    except Exception:
-        return None
-
-
 def _verify_delete_token(secret, email, ts, token):
     """Return True if token is a valid HMAC for (email, ts) and not expired."""
-    expected = hmac.new(secret, f"{email}|{ts}".encode(), hashlib.sha256).hexdigest()
+    expected = shared.sign_delete_token(secret, email, ts)
     if not hmac.compare_digest(expected, token):
         return False, "invalid token"
     try:
@@ -144,7 +137,7 @@ def _do_delete_spam(email, ts, token):
 
     Returns (success: bool, message: str).
     """
-    secret = _load_secret()
+    secret = shared.load_secret()
     if secret is None:
         return False, "Secret key not found — run the digest at least once first."
 

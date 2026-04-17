@@ -10,8 +10,6 @@ import argparse
 import datetime
 import email as email_lib
 import email.header
-import hashlib
-import hmac
 import imaplib
 import json
 import logging
@@ -26,14 +24,16 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
 
+import shared
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
 APP_VERSION = "0.3.1"
-STATE_FILE = "/data/spam_digest_last_run.json"
-SECRET_FILE = "/data/spam_digest_secret.key"
+STATE_FILE = shared.STATE_FILE
+SECRET_FILE = shared.SECRET_FILE
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
 DEFAULT_AI_MAX_EMAILS = 50
@@ -807,34 +807,6 @@ def send_digest_email(html_body, subject, generated_at, to_address):
 
 
 # ---------------------------------------------------------------------------
-# Delete-link secret and token
-# ---------------------------------------------------------------------------
-
-def _load_or_create_secret():
-    """Load the HMAC signing secret from disk, creating it if absent."""
-    try:
-        with open(SECRET_FILE) as f:
-            return bytes.fromhex(f.read().strip())
-    except FileNotFoundError:
-        secret = os.urandom(32)
-        try:
-            with open(SECRET_FILE, "w") as f:
-                f.write(secret.hex())
-        except OSError as e:
-            logging.warning("Could not write secret file %s: %s", SECRET_FILE, e)
-        return secret
-    except Exception as e:
-        logging.warning("Could not read secret file %s: %s", SECRET_FILE, e)
-        return os.urandom(32)
-
-
-def _delete_token(secret, email, ts):
-    """Return a hex HMAC-SHA256 token binding email + run timestamp."""
-    msg = f"{email}|{ts}".encode()
-    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
-
-
-# ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
 
@@ -972,9 +944,9 @@ def main():
         web_base_url = os.getenv("WEB_BASE_URL", "").strip().rstrip("/")
         delete_tokens = {}
         if web_base_url:
-            secret = _load_or_create_secret()
+            secret = shared.load_or_create_secret()
             if any(e.get("ai_label") == "spam" for e in result.get("emails", [])):
-                delete_tokens[result["email_address"]] = _delete_token(
+                delete_tokens[result["email_address"]] = shared.sign_delete_token(
                     secret, result["email_address"], generated_at
                 )
         html_body = build_html_digest(
