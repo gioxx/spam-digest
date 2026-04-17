@@ -26,6 +26,18 @@ import shared
 
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
+
+def _safe_header(value):
+    """Strip CR/LF from an HTTP header value (defense in depth vs CWE-113).
+
+    Every dynamic header value funnelled through self.send_header() passes
+    through this helper. In practice the values that reach it are already
+    percent-encoded by urllib.parse.urlencode (which encodes \\r and \\n)
+    or come from validated sources, but stripping any stray CR/LF makes
+    the invariant explicit and satisfies static analysers.
+    """
+    return str(value).replace("\r", "").replace("\n", "")
+
 STATE_FILE = shared.STATE_FILE
 SECRET_FILE = shared.SECRET_FILE
 APP_VERSION = shared.APP_VERSION
@@ -1550,7 +1562,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 [("n", "run_all_started" if ok else "run_error")]
             )
             self.send_response(303)
-            self.send_header("Location", location)
+            self.send_header("Location", _safe_header(location))
             self.end_headers()
         elif self.path.startswith("/action/run-mailbox"):
             qs = urllib.parse.urlparse(self.path).query
@@ -1574,7 +1586,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             else:
                 code, params_out = "run_error", [("n", "run_error")]
             self.send_response(303)
-            self.send_header("Location", "/?" + urllib.parse.urlencode(params_out))
+            self.send_header("Location", _safe_header("/?" + urllib.parse.urlencode(params_out)))
             self.end_headers()
         elif self.path == "/action/dry-run":
             ok, out = _run_digest("dry_run")
@@ -1584,7 +1596,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 [("n", "dry_run_done" if ok else "run_error")]
             )
             self.send_response(303)
-            self.send_header("Location", location)
+            self.send_header("Location", _safe_header(location))
             self.end_headers()
         elif self.path.startswith("/filters") or self.path.startswith("/review"):
             parsed = urllib.parse.urlparse(self.path)
@@ -1601,7 +1613,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             )
             self.send_response(status)
             for k, v in headers.items():
-                self.send_header(k, v)
+                self.send_header(_safe_header(k), _safe_header(v))
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -1680,7 +1692,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 params.append(("to", extra["to"]))
             location = "/?" + urllib.parse.urlencode(params)
             self.send_response(303)
-            self.send_header("Location", location)
+            self.send_header("Location", _safe_header(location))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -1708,7 +1720,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             )
             self.send_response(status)
             for k, v in headers.items():
-                self.send_header(k, v)
+                self.send_header(_safe_header(k), _safe_header(v))
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
