@@ -692,7 +692,7 @@ def _auto_action_section(auto_deleted, auto_moved):
     return blocks
 
 
-def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None, review_tokens=None):
+def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None, review_tokens=None, filters_tokens=None):
     ai_enabled = (
         os.getenv("AI_PROVIDER", "none").strip().lower() == "anthropic"
         and bool(os.getenv("AI_API_KEY"))
@@ -830,12 +830,30 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
         else:
             inner = f"<div style='padding:8px 0'>{_table_for_emails(emails, False)}</div>"
 
+        filters_btn = ""
+        if web_base_url and filters_tokens and r["email_address"] in filters_tokens:
+            ftoken = filters_tokens[r["email_address"]]
+            addr_enc = urllib.parse.quote(r["email_address"], safe="")
+            filters_url = (
+                f"{web_base_url}/filters"
+                f"?email={addr_enc}&token={ftoken}"
+            )
+            filters_btn = (
+                f"<div style='text-align:center;margin:14px 0 4px'>"
+                f"<a href='{filters_url}' style='display:inline-block;background:#0f172a;"
+                f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
+                f"font-weight:600;text-decoration:none;letter-spacing:0.01em;"
+                f"border:1px solid #334155'>"
+                f"\u2699\ufe0e Manage blacklist filters"
+                f"</a></div>"
+            )
+
         mailbox_blocks += (
             f"<div class='mailbox-block'>"
             f"<div class='mailbox-header'>\U0001f4ec {addr}"
             f" &nbsp;&middot;&nbsp; {folder}"
             f" &nbsp;&middot;&nbsp; <span style='color:#2563eb;font-weight:400'>{count} email(s)</span></div>"
-            f"<div class='mailbox-table-wrap'>{auto_section}{inner}</div></div>"
+            f"<div class='mailbox-table-wrap'>{auto_section}{inner}{filters_btn}</div></div>"
         )
 
     ai_note = (
@@ -1038,6 +1056,7 @@ def main():
         web_base_url = os.getenv("WEB_BASE_URL", "").strip().rstrip("/")
         delete_tokens = {}
         review_tokens = {}
+        filters_tokens = {}
         if web_base_url:
             secret = shared.load_or_create_secret()
             emails_for_mb = result.get("emails", [])
@@ -1060,11 +1079,28 @@ def main():
                 review_tokens[result["email_address"]] = shared.sign_mgmt_token(
                     secret, shared.PURPOSE_REVIEW, result["email_address"], nonce
                 )
+            # Always ship a fresh filters link so the user can jump straight
+            # to the management page from the digest when a new sender or
+            # domain deserves a rule. Same rotate-on-live / read-on-dry-run
+            # contract as the review link.
+            if result.get("status") == "success":
+                if args.dry_run:
+                    fnonce = shared.get_or_create_nonce(
+                        result["email_address"], shared.PURPOSE_FILTERS
+                    )
+                else:
+                    fnonce = shared.rotate_nonce(
+                        result["email_address"], shared.PURPOSE_FILTERS
+                    )
+                filters_tokens[result["email_address"]] = shared.sign_mgmt_token(
+                    secret, shared.PURPOSE_FILTERS, result["email_address"], fnonce
+                )
         html_body = build_html_digest(
             [result], generated_at,
             web_base_url=web_base_url or None,
             delete_tokens=delete_tokens or None,
             review_tokens=review_tokens or None,
+            filters_tokens=filters_tokens or None,
         )
 
         if args.dry_run:
