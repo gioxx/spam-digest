@@ -81,7 +81,7 @@ Open `http://localhost:8080` for the status dashboard.
 | `SMTP_PASS` | — | SMTP password. |
 | `RESEND_API_KEY` | — | Resend API key (`re_...`). **Required when `EMAIL_PROVIDER=resend`**. |
 | `DIGEST_TO` | `EMAIL_USER` | Override digest recipient (single-mailbox). Per-mailbox: use `digest_to` field in `MAILBOX_CONFIGS`. |
-| `DIGEST_FROM` | `SMTP_USER` | Sender address. **Required for Resend** (must be on a verified domain, or `onboarding@resend.dev` for testing). |
+| `DIGEST_FROM` | `SMTP_USER` | Sender address. Accepts bare email or RFC 5322 `Name <addr>` form (e.g. `Spam Digest <digest@example.com>`). **Required for Resend** (address must be on a verified domain, or `onboarding@resend.dev` for testing). |
 | `SEND_IF_EMPTY` | `false` | Send digest even when no spam is found. |
 | `AI_PROVIDER` | `none` | `anthropic` to enable AI, `none` to disable. |
 | `AI_API_KEY` | — | Anthropic API key. Required if `AI_PROVIDER=anthropic`. |
@@ -143,6 +143,19 @@ Notes on Resend:
 Switching providers is just a matter of flipping `EMAIL_PROVIDER` and
 providing the corresponding credentials — the rest of the config (digest
 recipient, schedule, mailboxes) is unchanged.
+
+### Display name in the From: header
+
+Both providers accept a display name alongside the address. Use the
+standard RFC 5322 `Name <addr@dom>` form in `DIGEST_FROM`:
+
+```env
+DIGEST_FROM=Spam Digest <digest@yourdomain.com>
+```
+
+Recipients will then see `Spam Digest <digest@yourdomain.com>` (or just
+"Spam Digest" depending on their client) instead of the bare email. A
+bare address keeps working as before.
 
 ---
 

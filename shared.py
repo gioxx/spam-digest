@@ -513,21 +513,42 @@ def send_email(to_address, subject, html_body, from_address=None, extra_headers=
     return _send_via_smtp(to_address, subject, html_body, from_address, extra_headers)
 
 
+def _resolve_from(from_address, fallback=""):
+    """Split a DIGEST_FROM value into (header_value, envelope_addr).
+
+    Accepts either a bare email (``digest@example.com``) or an RFC 5322
+    name-addr form (``Spam Digest <digest@example.com>``). The header
+    value preserves the display name; the envelope address is the bare
+    email used for SMTP MAIL FROM / Resend's ``from`` fallback.
+    """
+    import email.utils
+    raw = (from_address or os.getenv("DIGEST_FROM") or fallback or "").strip()
+    if not raw:
+        return "", ""
+    display_name, addr = email.utils.parseaddr(raw)
+    addr = (addr or "").strip()
+    if not addr:
+        # parseaddr returned no address → treat the whole value as bare addr
+        return raw, raw
+    header = email.utils.formataddr((display_name, addr)) if display_name else addr
+    return header, addr
+
+
 def _send_via_smtp(to_address, subject, html_body, from_address, extra_headers):
     smtp_host = (os.getenv("SMTP_HOST") or "").strip()
     smtp_port = _parse_port(os.getenv("SMTP_PORT", "587"), 587)
     smtp_user = (os.getenv("SMTP_USER") or "").strip()
     smtp_pass = (os.getenv("SMTP_PASS") or "").strip()
-    sender = (from_address or os.getenv("DIGEST_FROM") or smtp_user or "").strip()
+    from_header, envelope = _resolve_from(from_address, fallback=smtp_user)
 
     if not smtp_host:
         return False, "SMTP_HOST is not set"
-    if not sender:
+    if not envelope:
         return False, "no sender address (set DIGEST_FROM or SMTP_USER)"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = sender
+    msg["From"] = from_header
     msg["To"] = to_address
     if extra_headers:
         for k, v in extra_headers.items():
@@ -540,7 +561,7 @@ def _send_via_smtp(to_address, subject, html_body, from_address, extra_headers):
             with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=30) as server:
                 if smtp_user and smtp_pass:
                     server.login(smtp_user, smtp_pass)
-                server.sendmail(sender, [to_address], msg.as_bytes())
+                server.sendmail(envelope, [to_address], msg.as_bytes())
         else:
             with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
                 server.ehlo()
@@ -548,7 +569,7 @@ def _send_via_smtp(to_address, subject, html_body, from_address, extra_headers):
                 server.ehlo()
                 if smtp_user and smtp_pass:
                     server.login(smtp_user, smtp_pass)
-                server.sendmail(sender, [to_address], msg.as_bytes())
+                server.sendmail(envelope, [to_address], msg.as_bytes())
         return True, None
     except Exception as e:
         logging.warning("shared._send_via_smtp failed: %s", e)
@@ -559,15 +580,16 @@ def _send_via_resend(to_address, subject, html_body, from_address, extra_headers
     api_key = (os.getenv("RESEND_API_KEY") or "").strip()
     # For Resend, DIGEST_FROM must be an address on a verified domain
     # (or the sandbox address onboarding@resend.dev for quick testing).
-    sender = (from_address or os.getenv("DIGEST_FROM") or "").strip()
+    # Resend accepts both bare addresses and "Name <addr@dom>" in `from`.
+    from_header, envelope = _resolve_from(from_address)
 
     if not api_key:
         return False, "RESEND_API_KEY is not set"
-    if not sender:
+    if not envelope:
         return False, "no sender address (set DIGEST_FROM)"
 
     payload = {
-        "from": sender,
+        "from": from_header,
         "to": to_address,
         "subject": subject,
         "html": html_body,
