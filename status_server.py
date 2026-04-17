@@ -132,6 +132,128 @@ def _verify_delete_token(secret, email, ts, token):
     return True, "ok"
 
 
+def _get_mailbox_config(email):
+    return next(
+        (c for c in _get_mailbox_configs() if c.get("email_address") == email),
+        None,
+    )
+
+
+def _open_imap(cfg, folder=None):
+    """Connect, login, optionally select folder. Returns (mail, err_msg_or_None).
+
+    Caller is responsible for calling mail.logout() when done.
+    """
+    imap_server = cfg.get("imap_server", "")
+    imap_port = int(cfg.get("imap_port", 993))
+    imap_use_ssl = str(cfg.get("imap_use_ssl", "true")).lower() not in ("false", "0", "no")
+    email_user = cfg.get("email_user") or cfg.get("email_address", "")
+    email_pass = cfg.get("email_pass", "")
+    try:
+        if imap_use_ssl:
+            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+        else:
+            mail = imaplib.IMAP4(imap_server, imap_port)
+        mail.login(email_user, email_pass)
+        if folder is not None:
+            res, _ = mail.select(f'"{folder}"')
+            if res != "OK":
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
+                return None, f"could not open folder '{folder}'"
+        return mail, None
+    except ssl.SSLError as e:
+        return None, f"SSL error: {e}"
+    except imaplib.IMAP4.error as e:
+        return None, f"IMAP error: {e}"
+    except Exception as e:
+        return None, f"unexpected error: {e}"
+
+
+def _fetch_spam_headers(email, limit=200):
+    """Connect to the mailbox, fetch headers from the spam folder, return a list
+    of dicts: {uid, from, subject, date}. Returns (emails, err_msg_or_None).
+    """
+    cfg = _get_mailbox_config(email)
+    if cfg is None:
+        return [], f"No IMAP config found for {email}."
+    spam_folder = cfg.get("spam_folder") or "Junk"
+    mail, err = _open_imap(cfg, folder=spam_folder)
+    if mail is None:
+        return [], err
+    out = []
+    try:
+        res, data = mail.search(None, "ALL")
+        if res != "OK":
+            return [], "IMAP SEARCH failed"
+        ids = list(reversed(data[0].split()))[:limit]
+        import email as _emlib
+        import email.header as _emhdr
+        for num in ids:
+            try:
+                res, msg_data = mail.fetch(num, "(RFC822.HEADER)")
+                if res != "OK" or not msg_data or not msg_data[0]:
+                    continue
+                header_bytes = msg_data[0][1]
+                msg = _emlib.message_from_bytes(header_bytes)
+
+                def _decode(v):
+                    if not v:
+                        return ""
+                    parts = []
+                    for piece, charset in _emhdr.decode_header(v):
+                        if isinstance(piece, bytes):
+                            try:
+                                parts.append(piece.decode(charset or "utf-8", errors="replace"))
+                            except Exception:
+                                parts.append(piece.decode("latin-1", errors="replace"))
+                        else:
+                            parts.append(piece)
+                    return "".join(parts)
+
+                subject = _decode(msg.get("Subject", "(no subject)")) or "(no subject)"
+                from_raw = _decode(msg.get("From", "")) or "unknown"
+                date_raw = msg.get("Date", "")
+                out.append({
+                    "uid": num.decode() if isinstance(num, bytes) else str(num),
+                    "from": from_raw,
+                    "subject": subject,
+                    "date": date_raw,
+                })
+            except Exception:
+                continue
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+    return out, None
+
+
+def _verify_mgmt_request(email, purpose, token):
+    """Verify a management token against the stored nonce for (email, purpose).
+    Returns (ok, reason_str).
+    """
+    if not email or not _EMAIL_RE.match(email):
+        return False, "invalid email"
+    if not token:
+        return False, "missing token"
+    configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+    if email not in configured:
+        return False, "unknown mailbox"
+    secret = shared.load_secret()
+    if secret is None:
+        return False, "secret not initialised — run the digest at least once first"
+    nonce = shared.get_nonce(email, purpose)
+    if not nonce:
+        return False, "no management link issued for this mailbox yet"
+    if not shared.verify_mgmt_token(secret, purpose, email, nonce, token):
+        return False, "invalid or revoked link"
+    return True, "ok"
+
+
 def _do_delete_spam(email, ts, token):
     """Verify token, connect to IMAP, delete confirmed spam UIDs, update state.
 
@@ -214,6 +336,256 @@ def _do_delete_spam(email, ts, token):
         pass
 
     return True, f"Deleted {deleted} of {len(uids)} confirmed spam email(s) from {email}."
+
+
+# ---------------------------------------------------------------------------
+# Filters management page (/filters)
+# ---------------------------------------------------------------------------
+
+_RULE_TYPE_LABELS = {
+    "sender_exact": "Sender exact match",
+    "sender_domain": "Sender domain",
+    "subject_contains": "Subject contains",
+}
+
+
+def _render_filters_page(email, token, rules, preview=None, banner=None, banner_kind="ok"):
+    """Render the /filters page HTML.
+
+    `preview` is an optional dict: {"rule_type", "value", "matches": [headers...], "total": int, "error": str|None}
+    `banner` is an optional flash message string; banner_kind in {"ok","err"}.
+    """
+    email_esc = escape(email)
+    token_q = urllib.parse.quote(token, safe="")
+    email_q = urllib.parse.quote(email, safe="")
+    form_action = f"/filters?email={email_q}&token={token_q}"
+
+    banner_html = ""
+    if banner:
+        color = "var(--ok)" if banner_kind == "ok" else "var(--err)"
+        bg = "var(--ok-dim)" if banner_kind == "ok" else "var(--err-dim)"
+        border = "var(--ok-border)" if banner_kind == "ok" else "var(--err-border)"
+        banner_html = (
+            f"<div style='margin:0 0 1.25rem;padding:0.75rem 1rem;"
+            f"background:{bg};border:1px solid {border};border-left:3px solid {color};"
+            f"border-radius:var(--radius);color:{color};font-size:0.875rem'>"
+            f"{escape(banner)}</div>"
+        )
+
+    if rules:
+        rows = ""
+        for r in rules:
+            rid = escape(r.get("id", ""))
+            rtype = escape(_RULE_TYPE_LABELS.get(r.get("type", ""), r.get("type", "")))
+            rvalue = escape(r.get("value", ""))
+            added = escape(r.get("added_at", "") or "\u2014")
+            rows += (
+                f"<tr>"
+                f"<td style='padding:0.5rem 0.75rem;color:var(--muted);font-size:0.8125rem'>{rtype}</td>"
+                f"<td style='padding:0.5rem 0.75rem;font-family:var(--mono);font-size:0.8125rem'>{rvalue}</td>"
+                f"<td style='padding:0.5rem 0.75rem;color:var(--muted);font-size:0.75rem'>{added}</td>"
+                f"<td style='padding:0.5rem 0.75rem;text-align:right'>"
+                f"<form method='POST' action='{form_action}' style='display:inline' "
+                f"onsubmit=\"return confirm('Remove this rule?')\">"
+                f"<input type='hidden' name='action' value='remove_rule'>"
+                f"<input type='hidden' name='rule_id' value='{rid}'>"
+                f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
+                f"border:1px solid var(--err-border);padding:0.25rem 0.65rem;border-radius:0.375rem;"
+                f"font-size:0.75rem;cursor:pointer'>Remove</button>"
+                f"</form></td></tr>"
+            )
+        rules_table = (
+            "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
+            "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden'>"
+            "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Type</th>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Value</th>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Added</th>"
+            "<th></th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+    else:
+        rules_table = (
+            "<div style='padding:1rem 1.25rem;background:var(--surface2);"
+            "border:1px solid var(--border);border-radius:var(--radius);color:var(--muted);"
+            "font-size:0.875rem'>No filter rules yet. Add your first one below.</div>"
+        )
+
+    preview_html = ""
+    prefill_type = ""
+    prefill_value = ""
+    if preview:
+        prefill_type = preview.get("rule_type", "") or ""
+        prefill_value = preview.get("value", "") or ""
+        if preview.get("error"):
+            preview_html = (
+                f"<div style='margin:1rem 0;padding:0.75rem 1rem;background:var(--err-dim);"
+                f"border:1px solid var(--err-border);border-radius:var(--radius);color:var(--err);"
+                f"font-size:0.875rem'>Preview failed: {escape(preview['error'])}</div>"
+            )
+        else:
+            total = preview.get("total", 0)
+            matches = preview.get("matches", [])
+            sample_rows = ""
+            for m in matches[:15]:
+                sample_rows += (
+                    "<tr>"
+                    f"<td style='padding:0.4rem 0.75rem;color:var(--muted);font-size:0.75rem;"
+                    f"font-family:var(--mono)'>{escape((m.get('from') or '')[:60])}</td>"
+                    f"<td style='padding:0.4rem 0.75rem;font-size:0.8125rem'>{escape((m.get('subject') or '')[:80])}</td>"
+                    "</tr>"
+                )
+            more_note = ""
+            if total > len(matches[:15]):
+                more_note = (
+                    f"<div style='color:var(--muted);font-size:0.75rem;padding:0.5rem 0.75rem'>"
+                    f"\u2026 and {total - len(matches[:15])} more.</div>"
+                )
+            color = "var(--ok)" if total > 0 else "var(--muted)"
+            preview_html = (
+                f"<div style='margin:1rem 0;padding:0.75rem 1rem;background:var(--surface2);"
+                f"border:1px solid var(--border);border-radius:var(--radius)'>"
+                f"<div style='color:{color};font-weight:600;font-size:0.875rem;margin-bottom:0.5rem'>"
+                f"Preview: {total} email(s) in the current spam folder would match this rule.</div>"
+                + (f"<table style='width:100%'><tbody>{sample_rows}</tbody></table>{more_note}" if matches else "")
+                + "</div>"
+            )
+
+    def _opt(v, label):
+        sel = " selected" if v == prefill_type else ""
+        return f"<option value='{v}'{sel}>{label}</option>"
+
+    type_select = (
+        "<select name='rule_type' required "
+        "style='background:var(--surface);color:var(--text);border:1px solid var(--border);"
+        "border-radius:0.375rem;padding:0.45rem 0.6rem;font-size:0.875rem;font-family:inherit'>"
+        + _opt("sender_exact", "Sender address (exact match)")
+        + _opt("sender_domain", "Sender domain")
+        + _opt("subject_contains", "Subject contains text")
+        + "</select>"
+    )
+    value_input = (
+        f"<input name='value' type='text' value='{escape(prefill_value)}' required "
+        "placeholder='e.g. spam@bad.com  OR  bad.com  OR  SPECIAL OFFER' "
+        "style='flex:1;min-width:240px;background:var(--surface);color:var(--text);"
+        "border:1px solid var(--border);border-radius:0.375rem;padding:0.45rem 0.6rem;"
+        "font-size:0.875rem;font-family:var(--mono)'>"
+    )
+    add_form = (
+        f"<form method='POST' action='{form_action}' "
+        "style='display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin-top:1rem;"
+        "padding:1rem 1.25rem;background:var(--surface2);border:1px solid var(--border);"
+        "border-radius:var(--radius)'>"
+        f"{type_select}{value_input}"
+        "<button type='submit' name='action' value='preview' "
+        "style='background:transparent;color:var(--accent);border:1px solid var(--accent);"
+        "padding:0.45rem 1rem;border-radius:0.375rem;font-size:0.8125rem;cursor:pointer;"
+        "font-weight:500'>Preview matches</button>"
+        "<button type='submit' name='action' value='add_rule' "
+        "style='background:var(--accent);color:#fff;border:1px solid var(--accent);"
+        "padding:0.45rem 1rem;border-radius:0.375rem;font-size:0.8125rem;cursor:pointer;"
+        "font-weight:600'>Add rule</button>"
+        "</form>"
+    )
+
+    return (
+        "<!DOCTYPE html><html lang='en'><head>"
+        "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>Spam filters \u2014 {email_esc}</title>"
+        f"<style>{_CSS}</style></head><body>"
+        "<header><div class='logo'><span class='logo-icon'>\U0001f6e1</span>"
+        "<span class='logo-text'>Spam <em style='color:var(--accent)'>Digest</em></span></div>"
+        f"<div style='color:var(--muted);font-size:0.8125rem'>Filters \u2014 {email_esc}</div></header>"
+        "<main style='max-width:960px;margin:2rem auto;padding:0 1.5rem'>"
+        f"{banner_html}"
+        "<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.75rem'>Current rules</h2>"
+        "<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:0.75rem'>"
+        "Matching emails are permanently deleted on the next digest run.</p>"
+        f"{rules_table}"
+        "<h2 style='font-size:1.125rem;font-weight:600;margin:1.75rem 0 0.25rem'>Add a new rule</h2>"
+        "<p style='color:var(--muted);font-size:0.8125rem'>"
+        "\u201cPreview matches\u201d counts how many emails currently in your spam folder would match, without saving.</p>"
+        f"{preview_html}{add_form}"
+        "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
+        "This page is accessible only via the link emailed to you. "
+        "To revoke the link, click \u201cRegenerate filters link\u201d on the dashboard.</p>"
+        "</main></body></html>"
+    )
+
+
+def _handle_filters_request(email, token, form=None):
+    """Serve GET/POST for /filters. `form` is None for GET, a dict for POST.
+
+    Returns (status_code, html_body_bytes, extra_headers_dict).
+    """
+    ok, reason = _verify_mgmt_request(email, shared.PURPOSE_FILTERS, token)
+    if not ok:
+        body = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<title>Access denied</title></head>"
+            "<body style='font-family:sans-serif;background:#0f172a;color:#e2e8f0;"
+            "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0'>"
+            f"<div style='text-align:center;padding:2rem'><h2 style='color:#f87171'>Access denied</h2>"
+            f"<p style='color:#94a3b8'>{escape(reason)}</p></div></body></html>"
+        ).encode("utf-8")
+        return 403, body, {"Content-Type": "text/html; charset=utf-8"}
+
+    banner = None
+    banner_kind = "ok"
+    preview = None
+
+    if form is not None:
+        action = (form.get("action", [""]) or [""])[0]
+        if action == "add_rule":
+            rtype = (form.get("rule_type", [""]) or [""])[0]
+            value = (form.get("value", [""]) or [""])[0].strip()
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            try:
+                r = shared.add_filter_rule(email, rtype, value, now_str)
+                banner = f"Rule added: {_RULE_TYPE_LABELS.get(r['type'], r['type'])} = {r['value']}"
+                print(f"[filters] add_rule email={email} type={rtype} value={value}", flush=True)
+            except ValueError as e:
+                banner = f"Could not add rule: {e}"
+                banner_kind = "err"
+        elif action == "remove_rule":
+            rid = (form.get("rule_id", [""]) or [""])[0]
+            if shared.remove_filter_rule(email, rid):
+                banner = "Rule removed."
+                print(f"[filters] remove_rule email={email} id={rid}", flush=True)
+            else:
+                banner = "Rule not found."
+                banner_kind = "err"
+        elif action == "preview":
+            rtype = (form.get("rule_type", [""]) or [""])[0]
+            value = (form.get("value", [""]) or [""])[0].strip()
+            if rtype not in shared.FILTER_TYPES or not value:
+                preview = {
+                    "rule_type": rtype, "value": value,
+                    "matches": [], "total": 0,
+                    "error": "type and value are required",
+                }
+            else:
+                headers, err = _fetch_spam_headers(email, limit=300)
+                if err is not None:
+                    preview = {"rule_type": rtype, "value": value, "matches": [], "total": 0, "error": err}
+                else:
+                    rule = {"type": rtype, "value": value}
+                    matches = [h for h in headers
+                               if shared.match_filter_rules([rule], h.get("from", ""), h.get("subject", ""))]
+                    preview = {
+                        "rule_type": rtype, "value": value,
+                        "matches": matches, "total": len(matches), "error": None,
+                    }
+        else:
+            banner = "Unknown action."
+            banner_kind = "err"
+
+    rules = shared.get_filter_rules(email)
+    body = _render_filters_page(email, token, rules, preview=preview, banner=banner, banner_kind=banner_kind).encode("utf-8")
+    return 200, body, {"Content-Type": "text/html; charset=utf-8"}
 
 
 def _active_env_vars():
@@ -542,6 +914,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
+        elif self.path.startswith("/filters"):
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            email = params.get("email", [""])[0]
+            token = params.get("token", [""])[0]
+            status, body, headers = _handle_filters_request(email, token, form=None)
+            self.send_response(status)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path.startswith("/action/delete-spam"):
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
@@ -570,6 +955,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path == "/filters":
+            qs_params = urllib.parse.parse_qs(parsed.query)
+            email = qs_params.get("email", [""])[0]
+            token = qs_params.get("token", [""])[0]
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length < 0 or length > 32768:
+                self.send_response(413)
+                self.end_headers()
+                return
+            raw_body = self.rfile.read(length) if length else b""
+            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
+            status, body, headers = _handle_filters_request(email, token, form=form)
+            self.send_response(status)
+            for k, v in headers.items():
+                self.send_header(k, v)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()

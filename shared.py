@@ -203,6 +203,83 @@ def extract_sender_address(from_header):
     return addr
 
 
+def add_filter_rule(mailbox_email, rule_type, value, now_str):
+    """Add a filter rule for a mailbox. Returns the new rule dict.
+
+    Duplicates (same type + value) are ignored — the existing rule is returned.
+    Raises ValueError on invalid rule_type or empty value.
+    """
+    if rule_type not in FILTER_TYPES:
+        raise ValueError(f"invalid rule type: {rule_type!r}")
+    value = (value or "").strip()
+    if not value:
+        raise ValueError("rule value must not be empty")
+    value_norm = value.lower()
+    data = load_filters()
+    entry = data.setdefault(mailbox_email, {"rules": []})
+    rules = entry.setdefault("rules", [])
+    for existing in rules:
+        if existing.get("type") == rule_type and (existing.get("value") or "").lower() == value_norm:
+            return existing
+    new_rule = {
+        "id": "r_" + secrets.token_hex(4),
+        "type": rule_type,
+        "value": value,
+        "added_at": now_str,
+    }
+    rules.append(new_rule)
+    save_filters(data)
+    return new_rule
+
+
+def remove_filter_rule(mailbox_email, rule_id):
+    """Remove a filter rule by id. Returns True if removed, False if not found."""
+    data = load_filters()
+    entry = data.get(mailbox_email)
+    if not entry:
+        return False
+    rules = entry.get("rules", [])
+    new_rules = [r for r in rules if r.get("id") != rule_id]
+    if len(new_rules) == len(rules):
+        return False
+    entry["rules"] = new_rules
+    save_filters(data)
+    return True
+
+
+def add_allowlist_sender(mailbox_email, sender_addr):
+    """Add a sender to the mailbox allowlist. Returns True if newly added."""
+    addr = (sender_addr or "").strip().lower()
+    if not addr:
+        return False
+    data = load_allowlist()
+    entry = data.setdefault(mailbox_email, {"senders": []})
+    senders = entry.setdefault("senders", [])
+    if addr in {(s or "").lower() for s in senders}:
+        return False
+    senders.append(addr)
+    save_allowlist(data)
+    return True
+
+
+def remove_allowlist_sender(mailbox_email, sender_addr):
+    """Remove a sender from the mailbox allowlist. Returns True if removed."""
+    addr = (sender_addr or "").strip().lower()
+    if not addr:
+        return False
+    data = load_allowlist()
+    entry = data.get(mailbox_email)
+    if not entry:
+        return False
+    senders = entry.get("senders", [])
+    new_senders = [s for s in senders if (s or "").lower() != addr]
+    if len(new_senders) == len(senders):
+        return False
+    entry["senders"] = new_senders
+    save_allowlist(data)
+    return True
+
+
 def match_filter_rules(rules, from_header, subject):
     """Return the first matching rule dict, or None.
 
