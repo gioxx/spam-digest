@@ -7,8 +7,13 @@ and nonce handling identical across the two processes.
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 DATA_DIR = "/data"
 STATE_FILE = os.path.join(DATA_DIR, "spam_digest_last_run.json")
@@ -305,4 +310,67 @@ def match_filter_rules(rules, from_header, subject):
         if rtype == "subject_contains" and rvalue in subject_lower:
             return rule
     return None
+
+
+# ---------------------------------------------------------------------------
+# Generic SMTP send helper — used for management-link emails (and can be
+# reused for any future transactional mail). Digest emails use their own
+# dedicated builder in spam_digest.py, but the wire-level SMTP logic here
+# mirrors it (port 465 = implicit SSL, otherwise STARTTLS).
+# ---------------------------------------------------------------------------
+
+def _parse_port(value, default):
+    try:
+        v = int(value)
+        if v <= 0:
+            raise ValueError
+        return v
+    except (TypeError, ValueError):
+        return default
+
+
+def send_email(to_address, subject, html_body, from_address=None):
+    """Send a transactional HTML email via the configured SMTP server.
+
+    Reads SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, DIGEST_FROM from env.
+    Returns (ok: bool, error_msg: str|None).
+    """
+    smtp_host = (os.getenv("SMTP_HOST") or "").strip()
+    smtp_port = _parse_port(os.getenv("SMTP_PORT", "587"), 587)
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    smtp_pass = (os.getenv("SMTP_PASS") or "").strip()
+    sender = (from_address or os.getenv("DIGEST_FROM") or smtp_user or "").strip()
+
+    if not smtp_host:
+        return False, "SMTP_HOST is not set"
+    if not to_address:
+        return False, "missing recipient"
+    if not sender:
+        return False, "no sender address (set DIGEST_FROM or SMTP_USER)"
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_address
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    try:
+        context = ssl.create_default_context()
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=30) as server:
+                if smtp_user and smtp_pass:
+                    server.login(smtp_user, smtp_pass)
+                server.sendmail(sender, [to_address], msg.as_bytes())
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                if smtp_user and smtp_pass:
+                    server.login(smtp_user, smtp_pass)
+                server.sendmail(sender, [to_address], msg.as_bytes())
+        return True, None
+    except Exception as e:
+        logging.warning("shared.send_email failed: %s", e)
+        return False, str(e)
 

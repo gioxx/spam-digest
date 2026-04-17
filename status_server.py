@@ -826,6 +826,86 @@ def _handle_filters_request(email, token, form=None):
     return 200, body, {"Content-Type": "text/html; charset=utf-8"}
 
 
+def _smtp_is_configured():
+    return bool((os.getenv("SMTP_HOST") or "").strip())
+
+
+def _web_base_url():
+    return (os.getenv("WEB_BASE_URL") or "").strip().rstrip("/")
+
+
+_PURPOSE_LABELS = {
+    shared.PURPOSE_FILTERS: "blacklist filters",
+    shared.PURPOSE_REVIEW: "uncertain emails review",
+}
+
+
+def _do_regenerate_link(email, purpose, requester_ip):
+    """Rotate the nonce, build a new tokenized URL and email it to digest_to.
+
+    Returns (ok: bool, user_facing_msg: str). The URL is NEVER returned to
+    the caller — it is delivered only in the email body so that a drive-by
+    visitor of the dashboard cannot obtain it.
+    """
+    if purpose not in (shared.PURPOSE_FILTERS, shared.PURPOSE_REVIEW):
+        return False, "unknown purpose"
+    cfg = _get_mailbox_config(email)
+    if cfg is None:
+        return False, f"Unknown mailbox: {email}"
+    to_address = (cfg.get("digest_to") or "").strip() or email
+    if not to_address:
+        return False, "mailbox has no digest_to configured"
+    base = _web_base_url()
+    if not base:
+        return False, "WEB_BASE_URL is not set — the dashboard cannot build a link"
+    if not _smtp_is_configured():
+        return False, "SMTP is not configured — cannot send the link by email"
+
+    secret = shared.load_or_create_secret()
+    new_nonce = shared.rotate_nonce(email, purpose)
+    token = shared.sign_mgmt_token(secret, purpose, email, new_nonce)
+
+    path = "/filters" if purpose == shared.PURPOSE_FILTERS else "/review"
+    email_q = urllib.parse.quote(email, safe="")
+    token_q = urllib.parse.quote(token, safe="")
+    url = f"{base}{path}?email={email_q}&token={token_q}"
+
+    purpose_label = _PURPOSE_LABELS.get(purpose, purpose)
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    subject = f"[spam-digest] New {purpose_label} link for {email}"
+    url_esc = escape(url)
+    html_body = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
+        "<body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        "background:#f1f5f9;color:#1e293b;padding:24px;line-height:1.5\">"
+        "<div style='max-width:560px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;"
+        "border-radius:12px;padding:24px'>"
+        f"<h2 style='margin:0 0 12px;font-size:18px'>New {escape(purpose_label)} link</h2>"
+        f"<p style='margin:0 0 16px;color:#475569;font-size:14px'>"
+        f"A new management link was requested for <strong>{escape(email)}</strong>. "
+        "The previous link for this page has been revoked and will no longer work.</p>"
+        f"<p style='margin:0 0 16px;font-size:13px;color:#64748b'>"
+        f"Requested at {escape(now_str)} from <code>{escape(requester_ip or 'unknown')}</code>.</p>"
+        f"<p style='margin:0 0 24px'><a href='{url_esc}' "
+        "style='display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;"
+        "border-radius:6px;text-decoration:none;font-weight:600;font-size:14px'>"
+        f"Open {escape(purpose_label)}</a></p>"
+        "<p style='margin:0 0 6px;font-size:12px;color:#94a3b8'>If the button doesn\u2019t work, "
+        "paste this URL into your browser:</p>"
+        f"<p style='margin:0;font-size:11px;color:#475569;word-break:break-all;"
+        f"font-family:SFMono-Regular,Consolas,monospace;background:#f8fafc;"
+        f"border:1px solid #e2e8f0;border-radius:6px;padding:10px'>{url_esc}</p>"
+        "<p style='margin-top:24px;font-size:11px;color:#94a3b8'>"
+        "If you did not request this link, rotate it again from the dashboard \u2014 anyone "
+        "who obtained the old link can no longer use it.</p>"
+        "</div></body></html>"
+    )
+    ok, err = shared.send_email(to_address, subject, html_body)
+    if not ok:
+        return False, f"Could not send email: {err}"
+    return True, f"Link sent to {to_address}."
+
+
 def _active_env_vars():
     candidates = (
         "IMAP_SERVER", "IMAP_PORT", "IMAP_USE_SSL", "EMAIL_USER", "EMAIL_PASS",
@@ -976,13 +1056,14 @@ def _render_guide(active_vars):
     )
 
 
-def _render_html():
+def _render_html(notice=None, notice_kind="ok"):
     mailboxes = _get_mailbox_configs()
     cron_expr, schedule_desc = _get_schedule()
     last_run = _get_last_run()
     ai_ok, ai_detail, *_ = _ai_status()
     smtp_ok, smtp_host, smtp_port, smtp_user, send_if_empty = _smtp_status()
     active_vars = _active_env_vars()
+    mgmt_ready = smtp_ok and bool(_web_base_url())
 
     mb_rows = ""
     for mb in mailboxes:
@@ -994,6 +1075,28 @@ def _render_html():
             if digest_to and digest_to != mb["email_address"]
             else f"<span style='color:var(--muted)'>{addr}</span>"
         )
+        if mgmt_ready:
+            mgmt_buttons = (
+                f"<form method='POST' action='/action/regenerate-link' style='display:inline'"
+                f" onsubmit=\"return confirm('Send a new filters link to the mailbox owner?\\n\\n"
+                f"The previous filters link for {addr} will stop working immediately.')\">"
+                f"<input type='hidden' name='email' value='{addr}'>"
+                f"<input type='hidden' name='purpose' value='{shared.PURPOSE_FILTERS}'>"
+                f"<button type='submit' class='btn-action' title='Rotate filters link and email it to digest_to'>"
+                f"\U0001f510 Filters</button></form> "
+                f"<form method='POST' action='/action/regenerate-link' style='display:inline'"
+                f" onsubmit=\"return confirm('Send a new review link to the mailbox owner?\\n\\n"
+                f"The previous review link for {addr} will stop working immediately.')\">"
+                f"<input type='hidden' name='email' value='{addr}'>"
+                f"<input type='hidden' name='purpose' value='{shared.PURPOSE_REVIEW}'>"
+                f"<button type='submit' class='btn-action' title='Rotate review link and email it to digest_to'>"
+                f"\U0001f510 Review</button></form>"
+            )
+        else:
+            mgmt_buttons = (
+                "<span class='cell-muted' title='Requires WEB_BASE_URL and SMTP to be configured'"
+                " style='font-size:.72rem'>\u2014</span>"
+            )
         mb_rows += (
             f"<tr>"
             f"<td>{addr}</td>"
@@ -1002,6 +1105,7 @@ def _render_html():
             f"<td><code>{escape(str(mb['spam_folder']))}</code></td>"
             f"<td class='hide-mobile'>{escape(str(mb['max_emails']))}</td>"
             f"<td>{digest_to_cell}</td>"
+            f"<td class='hide-mobile' style='white-space:nowrap'>{mgmt_buttons}</td>"
             f"<td><a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
             f" onclick=\"return confirm('Run digest for {addr} now?')\">\u25b6 Run</a></td>"
             f"</tr>"
@@ -1049,6 +1153,17 @@ def _render_html():
     smtp_dot = "dot-ok" if smtp_ok else "dot-muted"
     smtp_label = smtp_host if smtp_ok else "Not configured"
 
+    notice_html = ""
+    if notice:
+        color = "var(--ok)" if notice_kind == "ok" else "var(--err)"
+        bg = "var(--ok-dim)" if notice_kind == "ok" else "var(--err-dim)"
+        border = "var(--ok-border)" if notice_kind == "ok" else "var(--err-border)"
+        notice_html = (
+            f"<div style='margin:0 0 1rem;padding:.75rem 1rem;background:{bg};"
+            f"border:1px solid {border};border-left:3px solid {color};border-radius:.5rem;"
+            f"color:{color};font-size:.875rem'>{escape(notice)}</div>"
+        )
+
     return (
         '<!DOCTYPE html><html lang="en"><head>'
         '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
@@ -1061,6 +1176,7 @@ def _render_html():
         f"<span class='badge badge-muted' style='font-size:.68rem;margin-left:.25rem'>v{APP_VERSION}</span></div>"
         f"<div class='meta'>Auto-refreshes every 60&thinsp;s<br><span id='clock'></span></div></header>"
         '<main>'
+        f"{notice_html}"
         f"<div class='grid-2'>"
         f"<section class='card'><p class='card-title'>Schedule</p><div class='mini-grid'>"
         f"<div class='mini-box' style='grid-column:1/-1'><span class='stat-label'>Cron expression</span><span class='stat-value'><code>{escape(cron_expr)}</code></span></div>"
@@ -1078,8 +1194,12 @@ def _render_html():
         f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p>"
         f"<a class='btn-action' href='/action/run-now'"
         f" onclick=\"return confirm('Run digest for all mailboxes now?')\">\u25b6 Run all</a></div>"
-        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th class='hide-mobile'>Port</th><th>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th></th></tr></thead>"
-        f"<tbody>{mb_rows}</tbody></table></div></section>"
+        f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th>IMAP server</th><th class='hide-mobile'>Port</th><th>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th class='hide-mobile'>Management links</th><th></th></tr></thead>"
+        f"<tbody>{mb_rows}</tbody></table></div>"
+        "<p style='color:var(--muted);font-size:.72rem;margin-top:.75rem;padding:0 .25rem'>"
+        "\U0001f510 buttons rotate the current link for that page and email the new URL to the mailbox owner. "
+        "The old link stops working immediately. Links are never shown on this dashboard.</p>"
+        "</section>"
         f"{last_run_html}"
         f"{_render_guide(active_vars)}"
         '</main>'
@@ -1121,8 +1241,15 @@ def _run_digest(action, email=None, allowed_emails=None):
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ("/", "/status", "/index.html"):
-            body = _render_html().encode("utf-8")
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in ("/", "/status", "/index.html"):
+            qs = urllib.parse.parse_qs(parsed.query)
+            raw_notice = qs.get("notice", [""])[0][:200]
+            notice_kind = "ok" if qs.get("kind", ["ok"])[0] != "err" else "err"
+            body = _render_html(
+                notice=raw_notice or None,
+                notice_kind=notice_kind,
+            ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1207,6 +1334,41 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/action/regenerate-link":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length < 0 or length > 4096:
+                self.send_response(413)
+                self.end_headers()
+                return
+            raw_body = self.rfile.read(length) if length else b""
+            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
+            email = (form.get("email", [""]) or [""])[0].strip()
+            purpose = (form.get("purpose", [""]) or [""])[0].strip()
+            requester_ip = self.client_address[0] if self.client_address else "unknown"
+
+            configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+            if not (email and _EMAIL_RE.match(email) and email in configured):
+                ok, msg = False, "Unknown or invalid mailbox."
+            elif purpose not in (shared.PURPOSE_FILTERS, shared.PURPOSE_REVIEW):
+                ok, msg = False, "Invalid link purpose."
+            else:
+                ok, msg = _do_regenerate_link(email, purpose, requester_ip)
+            print(
+                f"[action/regenerate-link] email={email} purpose={purpose} "
+                f"ip={requester_ip} ok={ok} | {msg}",
+                flush=True,
+            )
+            kind = "ok" if ok else "err"
+            location = (
+                "/?notice=" + urllib.parse.quote(msg, safe="")
+                + "&kind=" + kind
+            )
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         if path in ("/filters", "/review"):
             qs_params = urllib.parse.parse_qs(parsed.query)
             email = qs_params.get("email", [""])[0]
