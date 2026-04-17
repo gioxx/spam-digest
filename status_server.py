@@ -1068,7 +1068,10 @@ tbody tr:hover td { background: var(--surface2); }
 .cell-err { color: var(--err); font-size: 0.8rem; font-family: var(--mono); }
 .cell-muted { color: var(--muted); }
 .empty { color: var(--muted); font-size: 0.875rem; padding: 0.5rem 0; }
-.btn-action { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.9rem; border-radius: 9999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 0.75rem; font-weight: 500; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s, background 0.15s; white-space: nowrap; }
+.btn-action { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.9rem; border-radius: 9999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-family: inherit; font-size: 0.75rem; font-weight: 500; line-height: 1.4; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s, background 0.15s; white-space: nowrap; box-sizing: border-box; }
+button.btn-action { margin: 0; }
+.btn-action > svg, .btn-action .btn-icon { flex-shrink: 0; }
+.btn-action .btn-icon { font-size: 0.95rem; line-height: 1; display: inline-block; width: 1em; text-align: center; }
 .btn-action:hover { border-color: var(--accent); color: var(--text); background: var(--accent-dim); text-decoration: none; }
 .mgmt-cell { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .mgmt-cell form { display: inline-flex; }
@@ -1318,7 +1321,8 @@ def _render_html(notice=None, notice_kind="ok"):
         run_btn = (
             f"<a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
             f" data-confirm='Run the digest for {addr} now? An email will be sent if spam is found.'"
-            f" data-confirm-title='Run digest now' data-confirm-kind='primary'>\u25b6 Run</a>"
+            f" data-confirm-title='Run digest now' data-confirm-kind='primary'>"
+            f"<span class='btn-icon' aria-hidden='true'>\u25b6</span>Run</a>"
         )
         if mgmt_ready:
             filters_btn = (
@@ -1329,7 +1333,7 @@ def _render_html(notice=None, notice_kind="ok"):
                 f"<input type='hidden' name='email' value='{addr}'>"
                 f"<input type='hidden' name='purpose' value='{shared.PURPOSE_FILTERS}'>"
                 f"<button type='submit' class='btn-action' title='Rotate filters link and email it to digest_to'>"
-                f"\u2699\ufe0e Filters</button></form>"
+                f"<span class='btn-icon' aria-hidden='true'>\u2699\ufe0e</span>Filters</button></form>"
             )
         else:
             filters_btn = (
@@ -1421,7 +1425,8 @@ def _render_html(notice=None, notice_kind="ok"):
         f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p>"
         f"<a class='btn-action' href='/action/run-now'"
         f" data-confirm='Run the digest for all configured mailboxes now?'"
-        f" data-confirm-title='Run digest now' data-confirm-kind='primary'>\u25b6 Run all</a></div>"
+        f" data-confirm-title='Run digest now' data-confirm-kind='primary'>"
+        f"<span class='btn-icon' aria-hidden='true'>\u25b6</span>Run all</a></div>"
         f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th class='hide-mobile'>IMAP server</th><th class='hide-mobile'>Port</th><th class='hide-mobile'>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th>Management</th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div>"
         "<p style='color:var(--muted);font-size:.72rem;margin-top:.75rem;padding:0 .25rem'>"
