@@ -314,7 +314,7 @@ def fetch_spam_emails(cfg):
                 f"Could not open any spam folder. Tried: {', '.join(folder_candidates)}"
             )
 
-        res, data = mail.uid("SEARCH", None, "ALL")
+        res, data = mail.uid("SEARCH", "ALL")
         if res != "OK":
             raise RuntimeError("IMAP SEARCH failed.")
 

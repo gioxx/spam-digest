@@ -232,7 +232,7 @@ def _fetch_spam_headers(email, limit=200):
         return [], err
     out = []
     try:
-        res, data = mail.uid("SEARCH", None, "ALL")
+        res, data = mail.uid("SEARCH", "ALL")
         if res != "OK":
             return [], "IMAP SEARCH failed"
         # `ids` are UIDs — stable identifiers required for later STORE/COPY
