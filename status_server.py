@@ -5,6 +5,7 @@ Always started by entrypoint.sh inside the Docker container.
 Listens on WEB_PORT (default 8080).
 """
 
+import collections
 import datetime
 import hmac
 import http.server
@@ -16,6 +17,8 @@ import socketserver
 import ssl
 import subprocess
 import sys
+import threading
+import time
 import urllib.parse
 from html import escape
 
@@ -27,6 +30,50 @@ STATE_FILE = shared.STATE_FILE
 SECRET_FILE = shared.SECRET_FILE
 APP_VERSION = "0.3.1"
 _DELETE_TOKEN_MAX_AGE_DAYS = 7
+_ACTIONS_LOG_FILE = os.path.join(shared.DATA_DIR, "actions.log")
+
+# Rate limiter — best-effort, in-memory, per remote IP. Tokenized management
+# routes (/filters, /review, /action/delete-spam, /action/regenerate-link)
+# share this bucket so an attacker guessing tokens gets throttled quickly.
+_RATE_LIMIT_WINDOW_SECS = 60
+_RATE_LIMIT_MAX_HITS = 30
+_rate_state = collections.defaultdict(collections.deque)
+_rate_lock = threading.Lock()
+
+
+def _rate_limit_check(ip):
+    """Return True if the request should be allowed, False if rate-limited."""
+    now = time.monotonic()
+    cutoff = now - _RATE_LIMIT_WINDOW_SECS
+    with _rate_lock:
+        dq = _rate_state[ip]
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        if len(dq) >= _RATE_LIMIT_MAX_HITS:
+            return False
+        dq.append(now)
+        # Periodic cleanup: drop empty buckets so the dict doesn't grow unbounded.
+        if len(_rate_state) > 1024:
+            for k in [k for k, v in _rate_state.items() if not v]:
+                _rate_state.pop(k, None)
+    return True
+
+
+def _log_action(ip, action, email=None, result=None, detail=None):
+    """Append a single JSON line to /data/actions.log. Best-effort; never raises."""
+    entry = {
+        "ts": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "ip": ip or "unknown",
+        "action": action,
+        "email": email or "",
+        "result": result or "",
+        "detail": (detail or "")[:500],
+    }
+    try:
+        with open(_ACTIONS_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def _get_mailbox_configs():
@@ -1239,9 +1286,37 @@ def _run_digest(action, email=None, allowed_emails=None):
         return False, str(e)
 
 
+_TOKENIZED_PATHS = ("/filters", "/review", "/action/delete-spam", "/action/regenerate-link")
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
+    def _client_ip(self):
+        try:
+            return self.client_address[0]
+        except Exception:
+            return "unknown"
+
+    def _enforce_rate_limit(self, action):
+        """Return True if the request should be throttled (already responded to)."""
+        ip = self._client_ip()
+        if _rate_limit_check(ip):
+            return False
+        _log_action(ip, action, result="rate_limited", detail="429")
+        body = b"Too many requests. Try again in a minute."
+        self.send_response(429)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Retry-After", str(_RATE_LIMIT_WINDOW_SECS))
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith(_TOKENIZED_PATHS) and self._enforce_rate_limit(
+            f"GET {parsed.path}"
+        ):
+            return
         if parsed.path in ("/", "/status", "/index.html"):
             qs = urllib.parse.parse_qs(parsed.query)
             raw_notice = qs.get("notice", [""])[0][:200]
@@ -1259,6 +1334,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/action/run-now":
             ok, out = _run_digest("force_send")
             print(f"[action/run-now] ok={ok} | {out[:200]}", flush=True)
+            _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out[:200])
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
@@ -1267,15 +1343,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(qs)
             email = params.get("email", [""])[0]
             configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+            ok = False
+            out = "invalid email"
             if email and _EMAIL_RE.match(email) and email in configured:
                 ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
                 print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
+            _log_action(
+                self._client_ip(), "run-mailbox", email=email,
+                result="ok" if ok else "error", detail=out[:200],
+            )
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
         elif self.path == "/action/dry-run":
             ok, out = _run_digest("dry_run")
             print(f"[action/dry-run] ok={ok} | {out[:200]}", flush=True)
+            _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out[:200])
             self.send_response(302)
             self.send_header("Location", "/")
             self.end_headers()
@@ -1288,6 +1371,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 status, body, headers = _handle_filters_request(email, token, form=None)
             else:
                 status, body, headers = _handle_review_request(email, token, form=None)
+            _log_action(
+                self._client_ip(), f"GET {parsed.path}", email=email,
+                result=str(status),
+            )
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -1306,6 +1393,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             else:
                 ok, msg = False, "Missing or invalid parameters."
             print(f"[action/delete-spam] email={email} ok={ok} | {msg}", flush=True)
+            _log_action(
+                self._client_ip(), "delete-spam", email=email,
+                result="ok" if ok else "error", detail=msg,
+            )
             status_word = "Done" if ok else "Error"
             status_color = "#22c55e" if ok else "#f87171"
             body = (
@@ -1334,6 +1425,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path.startswith(_TOKENIZED_PATHS) and self._enforce_rate_limit(f"POST {path}"):
+            return
         if path == "/action/regenerate-link":
             length = int(self.headers.get("Content-Length", "0") or "0")
             if length < 0 or length > 4096:
@@ -1344,7 +1437,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
             email = (form.get("email", [""]) or [""])[0].strip()
             purpose = (form.get("purpose", [""]) or [""])[0].strip()
-            requester_ip = self.client_address[0] if self.client_address else "unknown"
+            requester_ip = self._client_ip()
 
             configured = {mb["email_address"] for mb in _get_mailbox_configs()}
             if not (email and _EMAIL_RE.match(email) and email in configured):
@@ -1357,6 +1450,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 f"[action/regenerate-link] email={email} purpose={purpose} "
                 f"ip={requester_ip} ok={ok} | {msg}",
                 flush=True,
+            )
+            _log_action(
+                requester_ip, "regenerate-link", email=email,
+                result="ok" if ok else "error",
+                detail=f"purpose={purpose} | {msg}",
             )
             kind = "ok" if ok else "err"
             location = (
@@ -1380,10 +1478,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return
             raw_body = self.rfile.read(length) if length else b""
             form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
+            form_action = (form.get("action", [""]) or [""])[0]
             if path == "/filters":
                 status, body, headers = _handle_filters_request(email, token, form=form)
             else:
                 status, body, headers = _handle_review_request(email, token, form=form)
+            _log_action(
+                self._client_ip(), f"POST {path}", email=email,
+                result=str(status),
+                detail=f"action={form_action}",
+            )
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
