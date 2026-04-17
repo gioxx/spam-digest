@@ -31,7 +31,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.6.0"
 STATE_FILE = shared.STATE_FILE
 SECRET_FILE = shared.SECRET_FILE
 DEFAULT_SPAM_FOLDER = "Junk"

@@ -28,7 +28,7 @@ _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
 STATE_FILE = shared.STATE_FILE
 SECRET_FILE = shared.SECRET_FILE
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.6.0"
 _DELETE_TOKEN_MAX_AGE_DAYS = 7
 _ACTIONS_LOG_FILE = os.path.join(shared.DATA_DIR, "actions.log")
 

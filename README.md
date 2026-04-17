@@ -16,11 +16,15 @@ A lightweight status dashboard is always available on port 8080.
 - **Multi-mailbox** — monitor as many IMAP accounts as you want in one container
 - **Smart folder detection** — auto-tries common spam folder names (`Junk`, `Spam`, `INBOX.Spam`, `[Gmail]/Spam`…)
 - **AI pre-filter (optional)** — Anthropic Claude classifies each email by sender + subject only (no body sent, minimal cost)
+- **Blacklist filters (new in 0.6)** — per-mailbox rules (sender, domain, subject keyword) that auto-delete matching emails at digest time, with a dry-run preview before saving
+- **Allowlist auto-move (new in 0.6)** — trusted senders are moved from spam to INBOX on every run, no manual step
+- **Review page for uncertain emails (new in 0.6)** — tokenised web page to either delete an uncertain email or trust its sender (adds to allowlist) in one click
 - **Skip-if-empty** — default behaviour: if no spam, no email; configurable to always send
 - **Status dashboard** — dark-themed web UI showing last run, config, mailboxes, schedule
 - **Run-now button** — trigger a digest immediately from the dashboard
 - **Zero dependencies** — pure Python standard library (no pip install needed)
 - **Cron scheduling** — fully configurable via environment variables
+- **Audit log + rate limit (new in 0.6)** — tokenised routes are rate-limited (30 req/min per IP) and every action is written as JSONL to `/data/actions.log`
 
 ---
 
@@ -141,7 +145,30 @@ The status dashboard (`:8080`) shows:
 - Mailbox list
 - Last run results (per mailbox: spam count, status, duration)
 - **Run now** button — triggers an immediate `--force-send` run
+- Per-mailbox **🔐 Filters / 🔐 Review** buttons (require `WEB_BASE_URL` + SMTP) — rotate the link for that page and email the new URL to the mailbox owner (the old link is revoked immediately; the new URL is **never** shown on the dashboard)
 - Environment variables reference (collapsible)
+
+---
+
+## Blacklist filters & uncertain-email review (v0.6)
+
+Two tokenised pages let you manage your mailbox without exposing a login on the dashboard:
+
+- `/filters` — add, preview, and remove auto-delete rules of type `sender_exact`, `sender_domain`, or `subject_contains`. Matching emails are **deleted immediately** on the next digest run (in the same IMAP session), and reported in an "Auto-deleted" transparency section of the digest email.
+- `/review` — resolve emails Claude classified as **uncertain**. For each one you can either **Trust & move to INBOX** (moves the email *and* adds the sender to your allowlist so future messages skip classification) or **Delete** permanently.
+
+Both pages are protected by an HMAC-signed rotating token stored on disk at `/data/spam_digest_nonces.json`:
+
+1. Open the dashboard.
+2. Click **🔐 Filters** or **🔐 Review** next to the mailbox you want to manage.
+3. Confirm the prompt. A fresh link is emailed to that mailbox's `digest_to` address.
+4. Open the email, click the link. Bookmark it if you want — it keeps working until you rotate again.
+
+Rotating invalidates the previous link instantly, so lost or leaked URLs are easy to revoke.
+
+Senders on the **allowlist** are always moved out of spam into INBOX on each digest run — even if you never click on `/review`. An "Auto-moved to INBOX" transparency section in the digest email lists every auto-moved message.
+
+Both features require `WEB_BASE_URL` (for building URLs) and a working SMTP configuration (for delivering the rotated link).
 
 ---
 
