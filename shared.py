@@ -416,11 +416,12 @@ header .meta { font-size: 12px; color: #94a3b8; margin-top: 4px; }
 }
 .card h2 { font-size: 16px; font-weight: 700; color: #1e293b; margin-bottom: 10px; }
 .card p { font-size: 14px; color: #475569; margin-bottom: 10px; }
-.btn-primary {
-    display: inline-block; background: #2563eb; color: #fff; padding: 10px 20px;
-    border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;
-    margin: 6px 0 12px;
+a.btn-primary, .btn-primary {
+    display: inline-block; background: #2563eb; color: #ffffff !important;
+    padding: 10px 20px; border-radius: 6px; text-decoration: none !important;
+    font-weight: 600; font-size: 14px; margin: 6px 0 12px;
 }
+a.btn-primary:hover, .btn-primary:hover { color: #ffffff !important; }
 .url-box {
     background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
     padding: 10px 12px; font-family: SFMono-Regular, Consolas, monospace;
