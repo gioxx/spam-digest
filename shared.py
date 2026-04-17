@@ -440,13 +440,16 @@ tbody td {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:nth-child(even) td { background: #f8fafc; }
 .td-from { font-family: monospace; font-size: 12px; color: #64748b; overflow: hidden; }
-.from-name, .from-addr, .td-subject {
+.from-name, .from-addr {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
 }
 .from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
 .from-addr { margin-top: 2px; color: #94a3b8; font-size: 10px; line-height: 1.25; }
 .td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
-.td-subject { font-weight: 500; color: #1e293b; }
+.td-subject {
+    font-weight: 500; color: #1e293b;
+    word-break: break-word; overflow-wrap: anywhere; white-space: normal;
+}
 .td-reason { font-size: 11px; color: #94a3b8; line-height: 1.35; word-break: break-word; overflow-wrap: anywhere; }
 .col-date { width: 11%; }
 .col-from { width: 22%; }

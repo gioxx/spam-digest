@@ -507,25 +507,29 @@ def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="
             reason = escape(em.get("ai_reason") or "")
 
             row_forms = (
-                f"<form method='POST' action='{form_action}' style='display:inline;margin-right:0.35rem' "
-                f"onsubmit=\"return confirm('Move this email to INBOX and trust the sender for future digests?')\">"
+                "<div style='display:flex;flex-wrap:wrap;gap:0.35rem;justify-content:flex-end'>"
+                f"<form method='POST' action='{form_action}' style='display:inline' "
+                f"data-confirm='Move this email to INBOX and trust the sender for future digests?' "
+                f"data-confirm-title='Trust sender' data-confirm-kind='primary'>"
                 f"<input type='hidden' name='action' value='move_to_inbox'>"
                 f"<input type='hidden' name='uid' value='{uid}'>"
                 f"<input type='hidden' name='sender' value='{sender_hidden}'>"
                 f"<input type='hidden' name='add_allowlist' value='1'>"
                 f"<button type='submit' style='background:var(--ok-dim);color:var(--ok);"
                 f"border:1px solid var(--ok-border);padding:0.3rem 0.7rem;border-radius:0.375rem;"
-                f"font-size:0.75rem;cursor:pointer;font-weight:500' "
+                f"font-size:0.75rem;cursor:pointer;font-weight:500;white-space:nowrap' "
                 f"title='Move to INBOX and add sender to allowlist'>"
                 f"&#10003; Trust &amp; move to INBOX</button></form>"
                 f"<form method='POST' action='{form_action}' style='display:inline' "
-                f"onsubmit=\"return confirm('Permanently delete this email?')\">"
+                f"data-confirm='Permanently delete this email? This cannot be undone.' "
+                f"data-confirm-title='Delete email' data-confirm-kind='danger'>"
                 f"<input type='hidden' name='action' value='delete_uncertain'>"
                 f"<input type='hidden' name='uid' value='{uid}'>"
                 f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
                 f"border:1px solid var(--err-border);padding:0.3rem 0.7rem;border-radius:0.375rem;"
-                f"font-size:0.75rem;cursor:pointer;font-weight:500'>"
+                f"font-size:0.75rem;cursor:pointer;font-weight:500;white-space:nowrap'>"
                 f"&#10005; Delete</button></form>"
+                "</div>"
             )
 
             reason_html = (
@@ -541,7 +545,7 @@ def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="
                 f"color:var(--muted);word-break:break-word'>{from_esc}</td>"
                 f"<td style='padding:0.75rem;vertical-align:top;font-size:0.8125rem;word-break:break-word'>"
                 f"{subject}{reason_html}</td>"
-                f"<td style='padding:0.75rem;vertical-align:top;text-align:right;white-space:nowrap'>"
+                f"<td style='padding:0.75rem;vertical-align:top;text-align:right'>"
                 f"{row_forms}</td>"
                 "</tr>"
             )
@@ -550,7 +554,7 @@ def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="
             "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;"
             "table-layout:fixed'>"
             "<colgroup>"
-            "<col style='width:12%'><col style='width:26%'><col style='width:38%'><col style='width:24%'>"
+            "<col style='width:11%'><col style='width:22%'><col style='width:35%'><col style='width:32%'>"
             "</colgroup>"
             "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
             "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
@@ -668,7 +672,8 @@ def _render_filters_page(email, token, rules, preview=None, banner=None, banner_
                 f"<td style='padding:0.5rem 0.75rem;color:var(--muted);font-size:0.75rem'>{added}</td>"
                 f"<td style='padding:0.5rem 0.75rem;text-align:right'>"
                 f"<form method='POST' action='{form_action}' style='display:inline' "
-                f"onsubmit=\"return confirm('Remove this rule?')\">"
+                f"data-confirm='Remove this filter rule?' "
+                f"data-confirm-title='Remove rule' data-confirm-kind='danger'>"
                 f"<input type='hidden' name='action' value='remove_rule'>"
                 f"<input type='hidden' name='rule_id' value='{rid}'>"
                 f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
@@ -882,14 +887,18 @@ _PURPOSE_LABELS = {
 
 
 _NOTICE_CODES = {
-    "link_sent":       ("ok",  "Link sent to {to}."),
-    "unknown_mailbox": ("err", "Unknown or invalid mailbox."),
-    "invalid_purpose": ("err", "Invalid link purpose."),
-    "unknown_purpose": ("err", "Unknown link purpose."),
-    "no_to":           ("err", "Mailbox has no digest_to configured."),
-    "no_base_url":     ("err", "WEB_BASE_URL is not set — the dashboard cannot build a link."),
-    "no_smtp":         ("err", "SMTP is not configured — cannot send the link by email."),
-    "smtp_error":      ("err", "Could not send email. See container logs for details."),
+    "link_sent":          ("ok",  "Link sent to {to}."),
+    "unknown_mailbox":    ("err", "Unknown or invalid mailbox."),
+    "invalid_purpose":    ("err", "Invalid link purpose."),
+    "unknown_purpose":    ("err", "Unknown link purpose."),
+    "no_to":              ("err", "Mailbox has no digest_to configured."),
+    "no_base_url":        ("err", "WEB_BASE_URL is not set — the dashboard cannot build a link."),
+    "no_smtp":            ("err", "SMTP is not configured — cannot send the link by email."),
+    "smtp_error":         ("err", "Could not send email. See container logs for details."),
+    "run_all_started":    ("ok",  "Digest run triggered for all mailboxes. The Last Run panel updates in a few seconds."),
+    "run_mailbox_started":("ok",  "Digest run triggered for {to}. The Last Run panel updates in a few seconds."),
+    "dry_run_done":       ("ok",  "Dry-run completed. Check container logs for the rendered HTML path."),
+    "run_error":          ("err", "Digest run failed. See container logs for details."),
 }
 
 
@@ -1065,6 +1074,26 @@ tbody tr:hover td { background: var(--surface2); }
 .btn-action:hover { border-color: var(--accent); color: var(--text); background: var(--accent-dim); text-decoration: none; }
 .mgmt-cell { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .mgmt-cell form { display: inline-flex; }
+/* ── modal (custom confirm dialog) ── */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(2,6,23,0.72); display: none; align-items: center; justify-content: center; z-index: 9999; padding: 1rem; backdrop-filter: blur(2px); }
+.modal-backdrop.open { display: flex; animation: mbFadeIn 0.12s ease-out; }
+@keyframes mbFadeIn { from { opacity: 0; } to { opacity: 1; } }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem 1.5rem 1.25rem; max-width: 460px; width: 100%; box-shadow: 0 25px 60px rgba(0,0,0,0.55); transform: translateY(4px); animation: mbSlide 0.15s ease-out forwards; }
+@keyframes mbSlide { to { transform: translateY(0); } }
+.modal-title { font-size: 1rem; font-weight: 600; color: var(--text); margin-bottom: 0.6rem; }
+.modal-msg { color: var(--muted); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1.25rem; white-space: pre-line; }
+.modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; flex-wrap: wrap; }
+.btn-modal { padding: 0.5rem 1rem; border-radius: 0.4rem; font-size: 0.8125rem; font-weight: 500; cursor: pointer; border: 1px solid var(--border); background: var(--surface2); color: var(--text); transition: background 0.12s, border-color 0.12s; }
+.btn-modal:hover { background: var(--bg); }
+.btn-modal.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-modal.primary:hover { filter: brightness(1.08); }
+.btn-modal.danger { background: var(--err-dim); border-color: var(--err-border); color: var(--err); }
+.btn-modal.danger:hover { background: var(--err); color: #fff; border-color: var(--err); }
+@media (max-width: 480px) {
+    .modal { padding: 1.1rem; }
+    .modal-actions { justify-content: stretch; }
+    .btn-modal { flex: 1 1 auto; }
+}
 #totop { position: fixed; bottom: 1.75rem; right: 1.75rem; width: 2.6rem; height: 2.6rem; border-radius: 50%; background: var(--accent); color: #fff; border: none; cursor: pointer; font-size: 1.2rem; display: none; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(0,0,0,.45); transition: background 0.2s, transform 0.15s; z-index: 999; line-height: 1; }
 #totop:hover { background: #2563eb; transform: translateY(-2px); }
 details { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
@@ -1094,6 +1123,54 @@ main > * { min-width: 0; }
 """
 
 _SHIELD_ICON = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
+
+# Global JS that replaces window.confirm() calls with an in-page modal.
+# Markup contract (place on <a> or <form>):
+#   data-confirm="message"                (required — triggers the modal)
+#   data-confirm-title="Optional title"
+#   data-confirm-kind="primary" | "danger"   (styles the confirm button)
+_MODAL_JS = (
+    "(function(){"
+    "var bd=document.createElement('div');bd.className='modal-backdrop';"
+    "bd.setAttribute('role','dialog');bd.setAttribute('aria-modal','true');"
+    "bd.innerHTML='<div class=\"modal\"><h3 class=\"modal-title\"></h3>"
+    "<p class=\"modal-msg\"></p><div class=\"modal-actions\">"
+    "<button type=\"button\" class=\"btn-modal btn-cancel\">Cancel</button>"
+    "<button type=\"button\" class=\"btn-modal btn-confirm primary\">Confirm</button>"
+    "</div></div>';"
+    "document.body.appendChild(bd);"
+    "var t=bd.querySelector('.modal-title'),m=bd.querySelector('.modal-msg'),"
+    "c=bd.querySelector('.btn-cancel'),o=bd.querySelector('.btn-confirm'),prev=null,cb=null;"
+    "function open(ti,ms,ki,fn){t.textContent=ti||'Please confirm';m.textContent=ms||'';"
+    "o.className='btn-modal btn-confirm '+(ki==='danger'?'danger':'primary');"
+    "o.textContent=ki==='danger'?'Yes, proceed':'Confirm';"
+    "prev=document.activeElement;cb=fn;bd.classList.add('open');setTimeout(function(){o.focus();},0);}"
+    "function close(){bd.classList.remove('open');cb=null;"
+    "if(prev&&prev.focus){try{prev.focus();}catch(e){}}}"
+    "c.addEventListener('click',close);"
+    "bd.addEventListener('click',function(e){if(e.target===bd)close();});"
+    "document.addEventListener('keydown',function(e){"
+    "if(!bd.classList.contains('open'))return;"
+    "if(e.key==='Escape'){e.preventDefault();close();}"
+    "else if(e.key==='Enter'&&document.activeElement!==c){e.preventDefault();o.click();}});"
+    "o.addEventListener('click',function(){var fn=cb;close();if(fn)fn();});"
+    "document.addEventListener('submit',function(e){"
+    "var f=e.target;if(!f||!f.getAttribute)return;"
+    "var msg=f.getAttribute('data-confirm');if(!msg)return;"
+    "e.preventDefault();var sub=e.submitter;"
+    "open(f.getAttribute('data-confirm-title'),msg,f.getAttribute('data-confirm-kind'),"
+    "function(){f.removeAttribute('data-confirm');"
+    "if(sub&&sub.name){var h=document.createElement('input');h.type='hidden';"
+    "h.name=sub.name;h.value=sub.value||'';f.appendChild(h);}f.submit();});"
+    "},true);"
+    "document.addEventListener('click',function(e){"
+    "var a=e.target&&e.target.closest&&e.target.closest('a[data-confirm]');if(!a)return;"
+    "e.preventDefault();var href=a.href;"
+    "open(a.getAttribute('data-confirm-title'),a.getAttribute('data-confirm'),"
+    "a.getAttribute('data-confirm-kind'),function(){window.location.href=href;});"
+    "},true);"
+    "})();"
+)
 _FAVICON_HREF = (
     "data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' "
     "viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%233b82f6\' stroke-width=\'1.75\' "
@@ -1130,6 +1207,7 @@ def _page_shell(page_title, subtitle_html, body_html,
         '<button id="totop" onclick="window.scrollTo({top:0,behavior:\'smooth\'})" title="Back to top">&#9650;</button>'
         '<script>'
         "window.addEventListener('scroll',function(){var b=document.getElementById('totop');if(b)b.style.display=window.scrollY>300?'flex':'none';});"
+        f'{_MODAL_JS}'
         f'{extra_scripts}'
         '</script>'
         '<footer><a href="https://github.com/gioxx/spam-digest" target="_blank" rel="noopener">gioxx/spam-digest</a> &nbsp;&middot;&nbsp; MIT License</footer>'
@@ -1237,13 +1315,15 @@ def _render_html(notice=None, notice_kind="ok"):
         )
         run_btn = (
             f"<a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
-            f" onclick=\"return confirm('Run digest for {addr} now?')\">\u25b6 Run</a>"
+            f" data-confirm='Run the digest for {addr} now? An email will be sent if spam is found.'"
+            f" data-confirm-title='Run digest now' data-confirm-kind='primary'>\u25b6 Run</a>"
         )
         if mgmt_ready:
             filters_btn = (
                 f"<form method='POST' action='/action/regenerate-link' style='display:inline'"
-                f" onsubmit=\"return confirm('Send a new filters link to the mailbox owner?\\n\\n"
-                f"The previous filters link for {addr} will stop working immediately.')\">"
+                f" data-confirm='Send a new filters link to the mailbox owner?\n\n"
+                f"The previous filters link for {addr} will stop working immediately.'"
+                f" data-confirm-title='Rotate filters link' data-confirm-kind='primary'>"
                 f"<input type='hidden' name='email' value='{addr}'>"
                 f"<input type='hidden' name='purpose' value='{shared.PURPOSE_FILTERS}'>"
                 f"<button type='submit' class='btn-action' title='Rotate filters link and email it to digest_to'>"
@@ -1341,7 +1421,8 @@ def _render_html(notice=None, notice_kind="ok"):
         f"</div></section></div>"
         f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p>"
         f"<a class='btn-action' href='/action/run-now'"
-        f" onclick=\"return confirm('Run digest for all mailboxes now?')\">\u25b6 Run all</a></div>"
+        f" data-confirm='Run the digest for all configured mailboxes now?'"
+        f" data-confirm-title='Run digest now' data-confirm-kind='primary'>\u25b6 Run all</a></div>"
         f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th class='hide-mobile'>IMAP server</th><th class='hide-mobile'>Port</th><th class='hide-mobile'>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th>Management</th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div>"
         "<p style='color:var(--muted);font-size:.72rem;margin-top:.75rem;padding:0 .25rem'>"
@@ -1448,8 +1529,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             ok, out = _run_digest("force_send")
             print(f"[action/run-now] ok={ok} | {out[:200]}", flush=True)
             _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out[:200])
-            self.send_response(302)
-            self.send_header("Location", "/")
+            location = "/?" + urllib.parse.urlencode(
+                [("n", "run_all_started" if ok else "run_error")]
+            )
+            self.send_response(303)
+            self.send_header("Location", location)
             self.end_headers()
         elif self.path.startswith("/action/run-mailbox"):
             qs = urllib.parse.urlparse(self.path).query
@@ -1458,22 +1542,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             configured = {mb["email_address"] for mb in _get_mailbox_configs()}
             ok = False
             out = "invalid email"
-            if email and _EMAIL_RE.match(email) and email in configured:
+            valid_email = bool(email and _EMAIL_RE.match(email) and email in configured)
+            if valid_email:
                 ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
                 print(f"[action/run-mailbox] email={email} ok={ok} | {out[:200]}", flush=True)
             _log_action(
                 self._client_ip(), "run-mailbox", email=email,
                 result="ok" if ok else "error", detail=out[:200],
             )
-            self.send_response(302)
-            self.send_header("Location", "/")
+            if not valid_email:
+                code, params_out = "unknown_mailbox", [("n", "unknown_mailbox")]
+            elif ok:
+                code, params_out = "run_mailbox_started", [("n", "run_mailbox_started"), ("to", email)]
+            else:
+                code, params_out = "run_error", [("n", "run_error")]
+            self.send_response(303)
+            self.send_header("Location", "/?" + urllib.parse.urlencode(params_out))
             self.end_headers()
         elif self.path == "/action/dry-run":
             ok, out = _run_digest("dry_run")
             print(f"[action/dry-run] ok={ok} | {out[:200]}", flush=True)
             _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out[:200])
-            self.send_response(302)
-            self.send_header("Location", "/")
+            location = "/?" + urllib.parse.urlencode(
+                [("n", "dry_run_done" if ok else "run_error")]
+            )
+            self.send_response(303)
+            self.send_header("Location", location)
             self.end_headers()
         elif self.path.startswith("/filters") or self.path.startswith("/review"):
             parsed = urllib.parse.urlparse(self.path)
