@@ -10,30 +10,27 @@ import argparse
 import datetime
 import email as email_lib
 import email.header
-import hashlib
-import hmac
 import imaplib
 import json
 import logging
 import os
-import smtplib
 import socket
 import ssl
 import sys
 import time
 import urllib.parse
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from html import escape
+
+import shared
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-APP_VERSION = "0.3.1"
-STATE_FILE = "/data/spam_digest_last_run.json"
-SECRET_FILE = "/data/spam_digest_secret.key"
+APP_VERSION = shared.APP_VERSION
+STATE_FILE = shared.STATE_FILE
+SECRET_FILE = shared.SECRET_FILE
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
 DEFAULT_AI_MAX_EMAILS = 50
@@ -165,10 +162,113 @@ def _decode_header_value(raw_value):
     return "".join(decoded)
 
 
+def _apply_user_rules(mail, mails, mailbox_email):
+    """Apply blacklist filters (auto-delete) and allowlist (auto-move to INBOX)
+    against the fetched mails list, reusing the open IMAP session.
+
+    Returns (remaining_mails, auto_deleted, auto_moved).
+    Partial failures are logged; the affected email stays in `remaining_mails`
+    and will appear in the digest as usual.
+    """
+    filter_rules = shared.get_filter_rules(mailbox_email)
+    allowlist = shared.get_allowlist_senders(mailbox_email)
+    if not filter_rules and not allowlist:
+        return mails, [], []
+
+    remaining = []
+    auto_deleted = []
+    auto_moved = []
+    any_deletion_flagged = False
+
+    for em in mails:
+        from_raw = em.get("from") or ""
+        subject = em.get("subject") or ""
+        uid = em["uid"]
+        uid_b = uid.encode() if isinstance(uid, str) else uid
+
+        # 1. Blacklist filter → auto-delete
+        rule = shared.match_filter_rules(filter_rules, from_raw, subject)
+        if rule is not None:
+            try:
+                typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+                if typ == "OK":
+                    auto_deleted.append({
+                        **em,
+                        "matched_rule": {
+                            "type": rule.get("type", ""),
+                            "value": rule.get("value", ""),
+                            "id": rule.get("id", ""),
+                        },
+                    })
+                    any_deletion_flagged = True
+                    continue
+                logging.warning(
+                    "Filter auto-delete STORE failed for UID %s on %s.",
+                    uid, mailbox_email,
+                )
+            except Exception as e:
+                logging.warning(
+                    "Filter auto-delete error for UID %s on %s: %s",
+                    uid, mailbox_email, e,
+                )
+            remaining.append(em)
+            continue
+
+        # 2. Allowlist → auto-move to INBOX (COPY + \Deleted on source)
+        sender_addr = shared.extract_sender_address(from_raw)
+        if sender_addr and sender_addr in allowlist:
+            try:
+                copy_typ, _ = mail.uid("COPY", uid_b, "INBOX")
+                if copy_typ == "OK":
+                    store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+                    if store_typ == "OK":
+                        auto_moved.append({**em, "matched_sender": sender_addr})
+                        any_deletion_flagged = True
+                        continue
+                    logging.warning(
+                        "Allowlist auto-move: COPY ok but STORE failed for UID %s on %s.",
+                        uid, mailbox_email,
+                    )
+                else:
+                    logging.warning(
+                        "Allowlist auto-move COPY failed for UID %s on %s.",
+                        uid, mailbox_email,
+                    )
+            except Exception as e:
+                logging.warning(
+                    "Allowlist auto-move error for UID %s on %s: %s",
+                    uid, mailbox_email, e,
+                )
+            remaining.append(em)
+            continue
+
+        remaining.append(em)
+
+    if any_deletion_flagged:
+        try:
+            mail.expunge()
+        except Exception as e:
+            logging.warning("EXPUNGE after auto-delete/move failed on %s: %s", mailbox_email, e)
+
+    if auto_deleted:
+        logging.info(
+            "Auto-deleted %d email(s) from %s by user filter rules.",
+            len(auto_deleted), mailbox_email,
+        )
+    if auto_moved:
+        logging.info(
+            "Auto-moved %d allowlisted email(s) from spam to INBOX for %s.",
+            len(auto_moved), mailbox_email,
+        )
+    return remaining, auto_deleted, auto_moved
+
+
 def fetch_spam_emails(cfg):
     """Return a list of dicts with basic metadata for each spam email."""
     start = time.monotonic()
     mails = []
+    auto_deleted = []
+    auto_moved = []
     error_msg = None
     status = "success"
     mail = None
@@ -211,19 +311,21 @@ def fetch_spam_emails(cfg):
                 f"Could not open any spam folder. Tried: {', '.join(folder_candidates)}"
             )
 
-        res, data = mail.search(None, "ALL")
+        res, data = mail.uid("SEARCH", "ALL")
         if res != "OK":
             raise RuntimeError("IMAP SEARCH failed.")
 
         ids = data[0].split()
-        # Process newest first: reverse the list, cap at max_emails
+        # Process newest first: reverse the list, cap at max_emails.
+        # `ids` are UIDs (stable identifiers) — required so that later
+        # STORE/COPY/EXPUNGE actions by UID target the correct messages.
         ids = list(reversed(ids))[:max_emails]
         logging.info("Found %s spam email(s) in %s for %s.", len(ids), spam_folder, email_address)
 
         for num in ids:
             try:
-                # Fetch only headers (much faster than full body)
-                res, msg_data = mail.fetch(num, "(RFC822.HEADER RFC822.SIZE)")
+                # Fetch only headers (much faster than full body), by UID.
+                res, msg_data = mail.uid("FETCH", num, "(RFC822.HEADER RFC822.SIZE)")
                 if res != "OK" or not msg_data or not msg_data[0]:
                     continue
 
@@ -266,6 +368,12 @@ def fetch_spam_emails(cfg):
             except Exception as e:
                 logging.warning("Error reading email UID %s: %s", num, e)
 
+        # Apply user-defined blacklist filters (auto-delete) and allowlist
+        # (auto-move to INBOX) in the same IMAP session before returning.
+        mails, auto_deleted, auto_moved = _apply_user_rules(
+            mail, mails, email_address
+        )
+
     except ssl.SSLError as e:
         status = "error"
         error_msg = f"SSL error: {e}"
@@ -294,6 +402,8 @@ def fetch_spam_emails(cfg):
         "spam_folder": spam_folder,
         "emails": mails,
         "count": len(mails),
+        "auto_deleted": auto_deleted,
+        "auto_moved": auto_moved,
         "duration_seconds": time.monotonic() - start,
     }
 
@@ -412,110 +522,6 @@ def classify_with_ai(all_mailbox_results):
 # HTML digest email builder
 # ---------------------------------------------------------------------------
 
-_EMAIL_CSS = """\
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-    background: #f1f5f9; color: #1e293b;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size: 15px; line-height: 1.6;
-}
-a { color: #2563eb; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.wrapper { max-width: 860px; margin: 0 auto; padding: 28px 18px; }
-header {
-    background: #1e293b; border-radius: 12px;
-    padding: 22px 26px; margin-bottom: 16px; color: #f1f5f9;
-}
-header h1 { font-size: 20px; font-weight: 700; color: #f1f5f9; }
-header h1 em { font-style: normal; color: #60a5fa; }
-header .meta { font-size: 12px; color: #94a3b8; margin-top: 4px; }
-.clean-banner {
-    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px;
-    padding: 14px 18px; margin-bottom: 16px; color: #166534; font-size: 14px; font-weight: 500;
-}
-.summary-bar {
-    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-    padding: 12px 18px; margin-bottom: 16px; font-size: 13px; color: #475569;
-}
-.summary-bar strong { color: #1e293b; }
-.ai-summary {
-    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-    padding: 0; margin-bottom: 16px; overflow: hidden;
-}
-.ai-summary table { width: 100%; border-collapse: collapse; table-layout: auto; }
-.ai-summary td {
-    padding: 12px 16px; text-align: center; border-right: 1px solid #e2e8f0;
-    font-size: 13px;
-}
-.ai-summary td:last-child { border-right: none; }
-.ai-summary .ai-val { font-size: 22px; font-weight: 700; display: block; }
-.ai-summary .ai-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; margin-top: 2px; }
-.ai-val.total { color: #2563eb; }
-.ai-val.safe { color: #16a34a; }
-.ai-val.uncertain { color: #d97706; }
-.ai-val.spam-c { color: #dc2626; }
-.section { margin-bottom: 20px; }
-.section-title {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700;
-    margin-bottom: 8px;
-}
-.section-title.safe { color: #16a34a; }
-.section-title.uncertain { color: #d97706; }
-.section-title.spam { color: #dc2626; }
-.section-title.noai { color: #64748b; }
-.badge { display: inline-block; padding: 2px 7px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
-.badge-safe     { background: #dcfce7; color: #166534; }
-.badge-uncertain{ background: #fef9c3; color: #92400e; }
-.badge-spam     { background: #fee2e2; color: #991b1b; }
-.mailbox-block { margin-bottom: 20px; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; }
-.mailbox-header {
-    background: #f8fafc; border-bottom: 1px solid #e2e8f0;
-    padding: 10px 14px; font-size: 13px; font-weight: 600; color: #1e293b;
-}
-.mailbox-empty {
-    background: #fff; padding: 12px 14px; font-size: 13px; color: #94a3b8;
-}
-.mailbox-table-wrap { overflow: hidden; }
-.error-box {
-    background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px;
-    padding: 14px 18px; color: #991b1b; font-size: 13px; margin-bottom: 16px;
-}
-.tip-box {
-    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-    padding: 16px 20px; margin-top: 16px; font-size: 13px; color: #64748b;
-}
-.tip-box strong { color: #1e293b; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
-thead th {
-    text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e8f0;
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: #64748b; font-weight: 600; background: #f8fafc;
-}
-tbody td {
-    padding: 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; background: #fff;
-}
-tbody tr:last-child td { border-bottom: none; }
-tbody tr:nth-child(even) td { background: #f8fafc; }
-.td-from { font-family: monospace; font-size: 12px; color: #64748b; overflow: hidden; }
-.from-name, .from-addr, .td-subject, .td-reason {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
-}
-.from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
-.from-addr { margin-top: 2px; color: #94a3b8; font-size: 10px; line-height: 1.25; }
-.td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
-.td-subject { font-weight: 500; color: #1e293b; }
-.td-reason { font-size: 11px; color: #94a3b8; }
-.col-date { width: 12%; }
-.col-from { width: 24%; }
-.col-subject { width: auto; }
-.col-label { width: 10%; }
-.col-reason { width: 14%; }
-.mailbox-block table { min-width: 0; }
-footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 16px; }
-"""
-
-
-
 def _attr(s):
     """Escape a string for use inside an HTML attribute delimited by single quotes."""
     return escape(s).replace("'", "&#39;")
@@ -568,35 +574,125 @@ def _email_row(em, show_ai):
 
 
 def _table_for_emails(emails, show_ai):
+    # Inline width attributes on <col> and <th> for email clients that strip CSS
+    # classes (Gmail strips <colgroup>/<col>; Outlook honors th width attributes).
     if show_ai:
         colgroup = (
             "<colgroup>"
-            "<col class='col-date'>"
-            "<col class='col-from'>"
-            "<col class='col-subject'>"
-            "<col class='col-label'>"
-            "<col class='col-reason'>"
+            "<col class='col-date' width='11%'>"
+            "<col class='col-from' width='22%'>"
+            "<col class='col-subject' width='35%'>"
+            "<col class='col-label' width='10%'>"
+            "<col class='col-reason' width='22%'>"
             "</colgroup>"
         )
-        ai_header = "<th class='col-label'>Label</th><th class='col-reason'>Reason</th>"
+        ai_header = (
+            "<th class='col-label' width='10%'>Label</th>"
+            "<th class='col-reason' width='22%'>Reason</th>"
+        )
+        header_main = (
+            "<th class='col-date' width='11%'>Date</th>"
+            "<th class='col-from' width='22%'>From</th>"
+            "<th class='col-subject' width='35%'>Subject</th>"
+        )
     else:
         colgroup = (
             "<colgroup>"
-            "<col class='col-date'>"
-            "<col class='col-from'>"
-            "<col class='col-subject'>"
+            "<col class='col-date' width='14%'>"
+            "<col class='col-from' width='28%'>"
+            "<col class='col-subject' width='58%'>"
             "</colgroup>"
         )
         ai_header = ""
+        header_main = (
+            "<th class='col-date' width='14%'>Date</th>"
+            "<th class='col-from' width='28%'>From</th>"
+            "<th class='col-subject' width='58%'>Subject</th>"
+        )
     rows = "".join(_email_row(em, show_ai) for em in emails)
     return (
         f"<table>{colgroup}"
-        f"<thead><tr><th class='col-date'>Date</th><th class='col-from'>From</th><th class='col-subject'>Subject</th>{ai_header}</tr></thead>"
+        f"<thead><tr>{header_main}{ai_header}</tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
 
-def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None):
+def _auto_action_row(em, action_note):
+    subject = escape(em.get("subject") or "(no subject)")
+    from_raw = em.get("from") or "unknown"
+    from_display_name, from_addr = _split_from_header(from_raw)
+    from_display = escape(from_display_name)
+    from_addr_html = ""
+    if from_addr and from_addr != from_display_name:
+        from_addr_html = f"<span class='from-addr' title='{_attr(from_addr)}'>{escape(from_addr)}</span>"
+    date_full = em.get("date") or "\u2014"
+    date_short = escape(date_full[:10])
+    subject_title = _attr(em.get("subject") or "(no subject)")
+    return (
+        f"<tr>"
+        f"<td class='td-date col-date'>{date_short}</td>"
+        f"<td class='td-from col-from' title='{_attr(from_raw)}'>"
+        f"<span class='from-name'>{from_display}</span>{from_addr_html}"
+        f"</td>"
+        f"<td class='td-subject col-subject' title='{subject_title}'>{subject}</td>"
+        f"<td class='td-reason col-reason'>{action_note}</td>"
+        f"</tr>"
+    )
+
+
+def _auto_action_table(rows_html):
+    return (
+        "<table>"
+        "<colgroup>"
+        "<col width='12%'><col width='26%'><col width='42%'><col width='20%'>"
+        "</colgroup>"
+        "<thead><tr>"
+        "<th width='12%'>Date</th><th width='26%'>From</th>"
+        "<th width='42%'>Subject</th><th width='20%'>Action</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+    )
+
+
+def _auto_action_section(auto_deleted, auto_moved):
+    """Render the transparency block listing auto-deleted and auto-moved emails.
+
+    Returns '' if both lists are empty.
+    """
+    blocks = ""
+    if auto_deleted:
+        rows = "".join(
+            _auto_action_row(
+                em,
+                escape(
+                    f"deleted \u2014 rule: {em['matched_rule']['type']} = {em['matched_rule']['value']}"
+                ),
+            )
+            for em in auto_deleted
+        )
+        blocks += (
+            "<div class='section' style='padding:12px 14px 0'>"
+            f"<div class='section-title' style='color:#64748b'>"
+            f"\U0001f9f9 Auto-deleted by your filter rules ({len(auto_deleted)})"
+            "</div>"
+            f"{_auto_action_table(rows)}</div>"
+        )
+    if auto_moved:
+        rows = "".join(
+            _auto_action_row(em, escape("moved to INBOX \u2014 sender in allowlist"))
+            for em in auto_moved
+        )
+        blocks += (
+            "<div class='section' style='padding:12px 14px 0'>"
+            f"<div class='section-title' style='color:#059669'>"
+            f"\u2709\ufe0f Auto-moved to INBOX from allowlist ({len(auto_moved)})"
+            "</div>"
+            f"{_auto_action_table(rows)}</div>"
+        )
+    return blocks
+
+
+def build_html_digest(all_results, generated_at, web_base_url=None, delete_tokens=None, review_tokens=None, filters_tokens=None):
     ai_enabled = (
         os.getenv("AI_PROVIDER", "none").strip().lower() == "anthropic"
         and bool(os.getenv("AI_API_KEY"))
@@ -637,6 +733,9 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
         addr = escape(r["email_address"])
         folder = escape(r["spam_folder"])
         count = r["count"]
+        auto_deleted = r.get("auto_deleted") or []
+        auto_moved = r.get("auto_moved") or []
+        auto_section = _auto_action_section(auto_deleted, auto_moved)
 
         if r["status"] != "success":
             mailbox_blocks += (
@@ -645,12 +744,21 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
             )
             continue
 
-        if count == 0:
+        if count == 0 and not auto_section:
             mailbox_blocks += (
                 f"<div class='mailbox-block'>"
                 f"<div class='mailbox-header'>\U0001f4eb {addr} &nbsp;&middot;&nbsp; {folder}</div>"
                 f"<div class='mailbox-empty'>No spam emails found.</div>"
                 f"</div>"
+            )
+            continue
+
+        if count == 0 and auto_section:
+            mailbox_blocks += (
+                f"<div class='mailbox-block'>"
+                f"<div class='mailbox-header'>\U0001f4ec {addr} &nbsp;&middot;&nbsp; {folder}"
+                f" &nbsp;&middot;&nbsp; <span style='color:#2563eb;font-weight:400'>0 remaining</span></div>"
+                f"<div class='mailbox-table-wrap'>{auto_section}</div></div>"
             )
             continue
 
@@ -668,10 +776,26 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
                     f"{_table_for_emails(safe_e, True)}</div>"
                 )
             if uncertain_e:
+                review_btn = ""
+                if web_base_url and review_tokens and r["email_address"] in review_tokens:
+                    rtoken = review_tokens[r["email_address"]]
+                    addr_enc = urllib.parse.quote(r["email_address"], safe="")
+                    review_url = (
+                        f"{web_base_url}/review"
+                        f"?email={addr_enc}&token={rtoken}"
+                    )
+                    review_btn = (
+                        f"<div style='text-align:center;margin:10px 0 4px'>"
+                        f"<a href='{review_url}' style='display:inline-block;background:#2563eb;"
+                        f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
+                        f"font-weight:600;text-decoration:none;letter-spacing:0.01em'>"
+                        f"\U0001f50d Review {len(uncertain_e)} uncertain email(s)"
+                        f"</a></div>"
+                    )
                 sections += (
                     f"<div class='section' style='padding:12px 14px 0'>"
                     f"<div class='section-title uncertain'>\U0001f7e1 Uncertain ({len(uncertain_e)}) \u2014 manual review recommended</div>"
-                    f"{_table_for_emails(uncertain_e, True)}</div>"
+                    f"{_table_for_emails(uncertain_e, True)}{review_btn}</div>"
                 )
             if spam_e:
                 delete_btn = ""
@@ -706,12 +830,30 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
         else:
             inner = f"<div style='padding:8px 0'>{_table_for_emails(emails, False)}</div>"
 
+        filters_btn = ""
+        if web_base_url and filters_tokens and r["email_address"] in filters_tokens:
+            ftoken = filters_tokens[r["email_address"]]
+            addr_enc = urllib.parse.quote(r["email_address"], safe="")
+            filters_url = (
+                f"{web_base_url}/filters"
+                f"?email={addr_enc}&token={ftoken}"
+            )
+            filters_btn = (
+                f"<div style='text-align:center;margin:14px 0 4px'>"
+                f"<a href='{filters_url}' style='display:inline-block;background:#0f172a;"
+                f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
+                f"font-weight:600;text-decoration:none;letter-spacing:0.01em;"
+                f"border:1px solid #334155'>"
+                f"\u2699\ufe0e Manage blacklist filters"
+                f"</a></div>"
+            )
+
         mailbox_blocks += (
             f"<div class='mailbox-block'>"
             f"<div class='mailbox-header'>\U0001f4ec {addr}"
             f" &nbsp;&middot;&nbsp; {folder}"
             f" &nbsp;&middot;&nbsp; <span style='color:#2563eb;font-weight:400'>{count} email(s)</span></div>"
-            f"<div class='mailbox-table-wrap'>{inner}</div></div>"
+            f"<div class='mailbox-table-wrap'>{auto_section}{inner}{filters_btn}</div></div>"
         )
 
     ai_note = (
@@ -727,20 +869,12 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
         "This also trains your mail server's spam filter.</div>"
     )
 
-    return (
-        f'<!DOCTYPE html><html lang="en"><head>'
-        f'<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
-        f'<title>Spam Digest \u2014 {escape(generated_at)}</title>'
-        f'<style>{_EMAIL_CSS}</style></head><body>'
-        f"<div class='wrapper'>"
-        f"<header>"
-        f"<h1>\U0001f6e1 Spam <em>Digest</em></h1>"
-        f"<div class='meta'>Generated: {escape(generated_at)}{ai_note}</div>"
-        f"</header>"
-        f"{summary_html}{mailbox_blocks}{tip_html}"
-        f"<footer>spam-digest v{APP_VERSION} &nbsp;&middot;&nbsp; "
-        f'<a href="https://github.com/gioxx/spam-digest">github.com/gioxx/spam-digest</a></footer>'
-        f"</div></body></html>"
+    header_meta = f"Generated: {escape(generated_at)}{ai_note}"
+    body_html = f"{summary_html}{mailbox_blocks}{tip_html}"
+    return shared.render_email_shell(
+        title=f"Spam Digest — {generated_at}",
+        header_meta_html=header_meta,
+        body_html=body_html,
     )
 
 
@@ -749,74 +883,20 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
 # ---------------------------------------------------------------------------
 
 def send_digest_email(html_body, subject, generated_at, to_address):
-    smtp_host = os.getenv("SMTP_HOST", "").strip()
-    smtp_port = _parse_int(os.getenv("SMTP_PORT", "587"), 587, "SMTP_PORT")
-    smtp_user = os.getenv("SMTP_USER", "").strip()
-    smtp_pass = os.getenv("SMTP_PASS", "").strip()
-    digest_from = os.getenv("DIGEST_FROM", smtp_user).strip()
-
-    if not smtp_host:
-        logging.error("SMTP_HOST is not set. Cannot send digest email.")
-        return False
     if not to_address:
         logging.error("No recipient address for digest email.")
         return False
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = digest_from or smtp_user
-    msg["To"] = to_address
-    msg["X-Mailer"] = f"spam-digest/{APP_VERSION}"
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    try:
-        context = ssl.create_default_context()
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
-                if smtp_user and smtp_pass:
-                    server.login(smtp_user, smtp_pass)
-                server.sendmail(msg["From"], [to_address], msg.as_bytes())
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                if smtp_user and smtp_pass:
-                    server.login(smtp_user, smtp_pass)
-                server.sendmail(msg["From"], [to_address], msg.as_bytes())
-        logging.info("Digest email sent to %s.", to_address)
+    ok, err = shared.send_email(
+        to_address=to_address,
+        subject=subject,
+        html_body=html_body,
+        extra_headers={"X-Mailer": f"spam-digest/{APP_VERSION}"},
+    )
+    if ok:
+        logging.info("Digest email sent to %s via %s.", to_address, shared._email_provider())
         return True
-    except Exception as e:
-        logging.error("Failed to send digest email: %s", e)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Delete-link secret and token
-# ---------------------------------------------------------------------------
-
-def _load_or_create_secret():
-    """Load the HMAC signing secret from disk, creating it if absent."""
-    try:
-        with open(SECRET_FILE) as f:
-            return bytes.fromhex(f.read().strip())
-    except FileNotFoundError:
-        secret = os.urandom(32)
-        try:
-            with open(SECRET_FILE, "w") as f:
-                f.write(secret.hex())
-        except OSError as e:
-            logging.warning("Could not write secret file %s: %s", SECRET_FILE, e)
-        return secret
-    except Exception as e:
-        logging.warning("Could not read secret file %s: %s", SECRET_FILE, e)
-        return os.urandom(32)
-
-
-def _delete_token(secret, email, ts):
-    """Return a hex HMAC-SHA256 token binding email + run timestamp."""
-    msg = f"{email}|{ts}".encode()
-    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+    logging.error("Failed to send digest email: %s", err)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -842,6 +922,17 @@ def save_state(results, generated_at, total_count):
             e["uid"] for e in r.get("emails", [])
             if e.get("ai_label") == "spam"
         ]
+        uncertain_entries = [
+            {
+                "uid": e["uid"],
+                "subject": e.get("subject") or "",
+                "from": e.get("from") or "",
+                "date": e.get("date") or "",
+                "ai_reason": e.get("ai_reason") or "",
+            }
+            for e in r.get("emails", [])
+            if e.get("ai_label") == "uncertain"
+        ]
         existing_mailboxes[addr] = {
             "email_address": addr,
             "digest_to": r.get("digest_to") or addr,
@@ -853,6 +944,7 @@ def save_state(results, generated_at, total_count):
             "sent": r.get("sent", False),
             "last_run": generated_at,
             "confirmed_spam_uids": confirmed_uids,
+            "uncertain_emails": uncertain_entries,
         }
 
     merged_mailboxes = list(existing_mailboxes.values())
@@ -920,9 +1012,13 @@ def main():
         results.append(result)
 
     total_count = sum(r["count"] for r in results)
-    logging.info("Total spam emails across all mailboxes: %d.", total_count)
+    total_auto = sum(len(r.get("auto_deleted") or []) + len(r.get("auto_moved") or []) for r in results)
+    logging.info(
+        "Total spam emails across all mailboxes: %d (plus %d auto-processed).",
+        total_count, total_auto,
+    )
 
-    if total_count == 0 and not send_if_empty:
+    if total_count == 0 and total_auto == 0 and not send_if_empty:
         logging.info("No spam emails found and SEND_IF_EMPTY is false. Digest will not be sent.")
         save_state(results, generated_at, total_count=0)
         sys.exit(0)
@@ -941,31 +1037,74 @@ def main():
 
         to_address = result.get("digest_to") or result["email_address"]
         count = result["count"]
+        auto_count = len(result.get("auto_deleted") or []) + len(result.get("auto_moved") or [])
 
-        if count == 0 and not send_if_empty:
+        if count == 0 and auto_count == 0 and not send_if_empty:
             logging.info(
                 "No spam for %s and SEND_IF_EMPTY is false. Skipping digest.",
                 result["email_address"],
             )
             continue
 
-        if count == 0:
+        if count == 0 and auto_count == 0:
             subject = f"Spam Digest \u2014 {generated_at} \u2014 No spam found"
+        elif count == 0 and auto_count > 0:
+            subject = f"Spam Digest \u2014 {generated_at} \u2014 {auto_count} auto-processed"
         else:
             subject = f"Spam Digest \u2014 {generated_at} \u2014 {count} email(s) in spam"
 
         web_base_url = os.getenv("WEB_BASE_URL", "").strip().rstrip("/")
         delete_tokens = {}
+        review_tokens = {}
+        filters_tokens = {}
+        # Pending nonces: {(email, purpose): candidate_nonce}. We sign the
+        # tokens shipped in the digest with these candidates, but commit
+        # them to the persistent nonce store only after the digest email is
+        # successfully delivered. A transient SMTP/Resend failure therefore
+        # leaves the user's current link intact instead of revoking it.
+        pending_nonces = {}
         if web_base_url:
-            secret = _load_or_create_secret()
-            if any(e.get("ai_label") == "spam" for e in result.get("emails", [])):
-                delete_tokens[result["email_address"]] = _delete_token(
+            secret = shared.load_or_create_secret()
+            emails_for_mb = result.get("emails", [])
+            if any(e.get("ai_label") == "spam" for e in emails_for_mb):
+                delete_tokens[result["email_address"]] = shared.sign_delete_token(
                     secret, result["email_address"], generated_at
+                )
+            if any(e.get("ai_label") == "uncertain" for e in emails_for_mb):
+                # Dry-run must not revoke the user's real review link — reuse
+                # the current nonce as-is. Live runs generate a candidate
+                # that will only be committed on successful send.
+                if args.dry_run:
+                    nonce = shared.get_or_create_nonce(
+                        result["email_address"], shared.PURPOSE_REVIEW
+                    )
+                else:
+                    nonce = shared.new_nonce()
+                    pending_nonces[(result["email_address"], shared.PURPOSE_REVIEW)] = nonce
+                review_tokens[result["email_address"]] = shared.sign_mgmt_token(
+                    secret, shared.PURPOSE_REVIEW, result["email_address"], nonce
+                )
+            # Always ship a fresh filters link so the user can jump straight
+            # to the management page from the digest when a new sender or
+            # domain deserves a rule. Same rotate-on-live / read-on-dry-run
+            # contract as the review link.
+            if result.get("status") == "success":
+                if args.dry_run:
+                    fnonce = shared.get_or_create_nonce(
+                        result["email_address"], shared.PURPOSE_FILTERS
+                    )
+                else:
+                    fnonce = shared.new_nonce()
+                    pending_nonces[(result["email_address"], shared.PURPOSE_FILTERS)] = fnonce
+                filters_tokens[result["email_address"]] = shared.sign_mgmt_token(
+                    secret, shared.PURPOSE_FILTERS, result["email_address"], fnonce
                 )
         html_body = build_html_digest(
             [result], generated_at,
             web_base_url=web_base_url or None,
             delete_tokens=delete_tokens or None,
+            review_tokens=review_tokens or None,
+            filters_tokens=filters_tokens or None,
         )
 
         if args.dry_run:
@@ -981,7 +1120,14 @@ def main():
             except OSError:
                 pass
         else:
-            result["sent"] = send_digest_email(html_body, subject, generated_at, to_address)
+            sent = send_digest_email(html_body, subject, generated_at, to_address)
+            result["sent"] = sent
+            if sent:
+                # Atomically rotate only after the email reached the MTA /
+                # API, revoking any previously issued links for these
+                # (mailbox, purpose) pairs.
+                for (addr, purpose), nonce in pending_nonces.items():
+                    shared.commit_nonce(addr, purpose, nonce)
 
     save_state(results, generated_at, total_count=total_count)
 
