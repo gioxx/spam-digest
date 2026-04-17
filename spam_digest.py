@@ -497,19 +497,19 @@ tbody td {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:nth-child(even) td { background: #f8fafc; }
 .td-from { font-family: monospace; font-size: 12px; color: #64748b; overflow: hidden; }
-.from-name, .from-addr, .td-subject, .td-reason {
+.from-name, .from-addr, .td-subject {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
 }
 .from-name { color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600; }
 .from-addr { margin-top: 2px; color: #94a3b8; font-size: 10px; line-height: 1.25; }
 .td-date { white-space: nowrap; color: #94a3b8; font-size: 12px; }
 .td-subject { font-weight: 500; color: #1e293b; }
-.td-reason { font-size: 11px; color: #94a3b8; }
-.col-date { width: 12%; }
-.col-from { width: 24%; }
-.col-subject { width: auto; }
+.td-reason { font-size: 11px; color: #94a3b8; line-height: 1.35; word-break: break-word; overflow-wrap: anywhere; }
+.col-date { width: 11%; }
+.col-from { width: 22%; }
+.col-subject { width: 35%; }
 .col-label { width: 10%; }
-.col-reason { width: 14%; }
+.col-reason { width: 22%; }
 .mailbox-block table { min-width: 0; }
 footer { margin-top: 28px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 16px; }
 """
@@ -568,30 +568,45 @@ def _email_row(em, show_ai):
 
 
 def _table_for_emails(emails, show_ai):
+    # Inline width attributes on <col> and <th> for email clients that strip CSS
+    # classes (Gmail strips <colgroup>/<col>; Outlook honors th width attributes).
     if show_ai:
         colgroup = (
             "<colgroup>"
-            "<col class='col-date'>"
-            "<col class='col-from'>"
-            "<col class='col-subject'>"
-            "<col class='col-label'>"
-            "<col class='col-reason'>"
+            "<col class='col-date' width='11%'>"
+            "<col class='col-from' width='22%'>"
+            "<col class='col-subject' width='35%'>"
+            "<col class='col-label' width='10%'>"
+            "<col class='col-reason' width='22%'>"
             "</colgroup>"
         )
-        ai_header = "<th class='col-label'>Label</th><th class='col-reason'>Reason</th>"
+        ai_header = (
+            "<th class='col-label' width='10%'>Label</th>"
+            "<th class='col-reason' width='22%'>Reason</th>"
+        )
+        header_main = (
+            "<th class='col-date' width='11%'>Date</th>"
+            "<th class='col-from' width='22%'>From</th>"
+            "<th class='col-subject' width='35%'>Subject</th>"
+        )
     else:
         colgroup = (
             "<colgroup>"
-            "<col class='col-date'>"
-            "<col class='col-from'>"
-            "<col class='col-subject'>"
+            "<col class='col-date' width='14%'>"
+            "<col class='col-from' width='28%'>"
+            "<col class='col-subject' width='58%'>"
             "</colgroup>"
         )
         ai_header = ""
+        header_main = (
+            "<th class='col-date' width='14%'>Date</th>"
+            "<th class='col-from' width='28%'>From</th>"
+            "<th class='col-subject' width='58%'>Subject</th>"
+        )
     rows = "".join(_email_row(em, show_ai) for em in emails)
     return (
         f"<table>{colgroup}"
-        f"<thead><tr><th class='col-date'>Date</th><th class='col-from'>From</th><th class='col-subject'>Subject</th>{ai_header}</tr></thead>"
+        f"<thead><tr>{header_main}{ai_header}</tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
