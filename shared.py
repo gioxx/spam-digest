@@ -163,7 +163,7 @@ def commit_nonce(email, purpose, nonce):
 
 
 # ---------------------------------------------------------------------------
-# Filters (user-defined blacklist rules) and allowlist (trusted senders).
+# Filters (user-defined blocklist rules) and allowlist (trusted senders).
 # Both are stored as {mailbox_email: {...}} dicts in separate JSON files so
 # each mailbox's data stays clearly scoped.
 # ---------------------------------------------------------------------------

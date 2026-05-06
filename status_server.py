@@ -671,7 +671,7 @@ _RULE_TYPE_LABELS = {
 def _render_filters_page(email, token, rules, allowlist_rules=None, preview=None, al_preview=None, banner=None, banner_kind="ok"):
     """Render the /filters page HTML.
 
-    `rules` — blacklist rules; `allowlist_rules` — allowlist rules.
+    `rules` — blocklist rules; `allowlist_rules` — allowlist rules.
     `preview` / `al_preview` — optional preview result dicts for each section.
     `banner` is an optional flash message string; banner_kind in {"ok","err"}.
     """
@@ -920,11 +920,11 @@ def _render_filters_page(email, token, rules, allowlist_rules=None, preview=None
         "<main style='max-width:960px;margin:2rem auto;padding:0 1.5rem'>"
         f"{banner_html}"
         "<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.75rem'>"
-        "\U0001f6ab Blacklist \u2014 auto-delete</h2>"
+        "\U0001f6ab Blocklist \u2014 auto-delete</h2>"
         "<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:0.75rem'>"
         "Matching emails are permanently deleted on the next digest run.</p>"
         f"{rules_table}"
-        "<h2 style='font-size:1.125rem;font-weight:600;margin:1.75rem 0 0.25rem'>Add a blacklist rule</h2>"
+        "<h2 style='font-size:1.125rem;font-weight:600;margin:1.75rem 0 0.25rem'>Add a blocklist rule</h2>"
         "<p style='color:var(--muted);font-size:0.8125rem'>"
         "\u201cPreview matches\u201d counts how many emails currently in your spam folder would match, without saving.</p>"
         f"{preview_html}{add_form}"
@@ -980,7 +980,7 @@ def _handle_filters_request(email, token, form=None):
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             try:
                 r = shared.add_filter_rule(email, rtype, value, now_str)
-                banner = f"Blacklist rule added: {_RULE_TYPE_LABELS.get(r['type'], r['type'])} = {r['value']}"
+                banner = f"Blocklist rule added: {_RULE_TYPE_LABELS.get(r['type'], r['type'])} = {r['value']}"
                 print(f"[filters] add_rule email={email} type={rtype} value={value}", flush=True)
             except ValueError as e:
                 banner = f"Could not add rule: {e}"
@@ -988,7 +988,7 @@ def _handle_filters_request(email, token, form=None):
         elif action == "remove_rule":
             rid = (form.get("rule_id", [""]) or [""])[0]
             if shared.remove_filter_rule(email, rid):
-                banner = "Blacklist rule removed."
+                banner = "Blocklist rule removed."
                 print(f"[filters] remove_rule email={email} id={rid}", flush=True)
             else:
                 banner = "Rule not found."
@@ -1082,7 +1082,7 @@ def _web_base_url():
 
 
 _PURPOSE_LABELS = {
-    shared.PURPOSE_FILTERS: "blacklist filters",
+    shared.PURPOSE_FILTERS: "filters & allowlist",
     shared.PURPOSE_REVIEW: "uncertain emails review",
 }
 

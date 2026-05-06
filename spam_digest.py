@@ -163,7 +163,7 @@ def _decode_header_value(raw_value):
 
 
 def _apply_user_rules(mail, mails, mailbox_email):
-    """Apply blacklist filters (auto-delete) and allowlist (auto-move to INBOX)
+    """Apply blocklist filters (auto-delete) and allowlist (auto-move to INBOX)
     against the fetched mails list, reusing the open IMAP session.
 
     Returns (remaining_mails, auto_deleted, auto_moved).
@@ -187,7 +187,7 @@ def _apply_user_rules(mail, mails, mailbox_email):
         uid = em["uid"]
         uid_b = uid.encode() if isinstance(uid, str) else uid
 
-        # 1. Blacklist filter → auto-delete
+        # 1. Blocklist filter → auto-delete
         rule = shared.match_filter_rules(filter_rules, from_raw, subject)
         if rule is not None:
             try:
@@ -378,7 +378,7 @@ def fetch_spam_emails(cfg):
             except Exception as e:
                 logging.warning("Error reading email UID %s: %s", num, e)
 
-        # Apply user-defined blacklist filters (auto-delete) and allowlist
+        # Apply user-defined blocklist filters (auto-delete) and allowlist
         # (auto-move to INBOX) in the same IMAP session before returning.
         mails, auto_deleted, auto_moved = _apply_user_rules(
             mail, mails, email_address
@@ -854,7 +854,7 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
                 f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
                 f"font-weight:600;text-decoration:none;letter-spacing:0.01em;"
                 f"border:1px solid #334155'>"
-                f"\u2699\ufe0e Manage blacklist filters"
+                f"\u2699\ufe0e Manage filters &amp; allowlist"
                 f"</a></div>"
             )
 
