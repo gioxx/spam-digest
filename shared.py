@@ -176,6 +176,7 @@ def commit_nonce(email, purpose, nonce):
 #     ]
 #   }
 FILTER_TYPES = ("sender_exact", "sender_domain", "subject_contains")
+ALLOWLIST_TYPES = FILTER_TYPES
 
 
 def _load_json_dict(path):
@@ -312,6 +313,71 @@ def remove_allowlist_sender(mailbox_email, sender_addr):
     entry["senders"] = new_senders
     save_allowlist(data)
     return True
+
+
+def get_allowlist_rules(mailbox_email):
+    """Return the list of structured allowlist rule dicts for a mailbox (empty list if none).
+
+    These are the explicit rules (domain, sender, subject) stored in the ``rules``
+    key of the allowlist file — separate from the legacy per-sender ``senders`` list
+    that is managed via the review page.
+    """
+    return load_allowlist().get(mailbox_email, {}).get("rules", [])
+
+
+def add_allowlist_rule(mailbox_email, rule_type, value, now_str):
+    """Add an allowlist rule for a mailbox. Returns the new rule dict.
+
+    Duplicates (same type + value) are ignored — the existing rule is returned.
+    Raises ValueError on invalid rule_type or empty value.
+    """
+    if rule_type not in ALLOWLIST_TYPES:
+        raise ValueError(f"invalid allowlist rule type: {rule_type!r}")
+    value = (value or "").strip()
+    if not value:
+        raise ValueError("rule value must not be empty")
+    value_norm = value.lower()
+    data = load_allowlist()
+    entry = data.setdefault(mailbox_email, {"senders": [], "rules": []})
+    rules = entry.setdefault("rules", [])
+    for existing in rules:
+        if existing.get("type") == rule_type and (existing.get("value") or "").lower() == value_norm:
+            return existing
+    new_rule = {
+        "id": "a_" + secrets.token_hex(4),
+        "type": rule_type,
+        "value": value,
+        "added_at": now_str,
+    }
+    rules.append(new_rule)
+    save_allowlist(data)
+    return new_rule
+
+
+def remove_allowlist_rule(mailbox_email, rule_id):
+    """Remove an allowlist rule by id. Returns True if removed, False if not found."""
+    data = load_allowlist()
+    entry = data.get(mailbox_email)
+    if not entry:
+        return False
+    rules = entry.get("rules", [])
+    new_rules = [r for r in rules if r.get("id") != rule_id]
+    if len(new_rules) == len(rules):
+        return False
+    entry["rules"] = new_rules
+    save_allowlist(data)
+    return True
+
+
+def match_allowlist_rules(rules, from_header, subject):
+    """Return the first matching allowlist rule dict, or None.
+
+    Uses the same matching logic as match_filter_rules — rule types:
+      - sender_exact: full sender address equals value (case-insensitive)
+      - sender_domain: sender domain equals value (case-insensitive)
+      - subject_contains: subject contains value as substring (case-insensitive)
+    """
+    return match_filter_rules(rules, from_header, subject)
 
 
 def match_filter_rules(rules, from_header, subject):

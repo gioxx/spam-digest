@@ -172,7 +172,8 @@ def _apply_user_rules(mail, mails, mailbox_email):
     """
     filter_rules = shared.get_filter_rules(mailbox_email)
     allowlist = shared.get_allowlist_senders(mailbox_email)
-    if not filter_rules and not allowlist:
+    allowlist_rules = shared.get_allowlist_rules(mailbox_email)
+    if not filter_rules and not allowlist and not allowlist_rules:
         return mails, [], []
 
     remaining = []
@@ -216,13 +217,22 @@ def _apply_user_rules(mail, mails, mailbox_email):
 
         # 2. Allowlist → auto-move to INBOX (COPY + \Deleted on source)
         sender_addr = shared.extract_sender_address(from_raw)
-        if sender_addr and sender_addr in allowlist:
+        al_rule = shared.match_allowlist_rules(allowlist_rules, from_raw, subject)
+        al_match = (sender_addr and sender_addr in allowlist) or al_rule is not None
+        if al_match:
             try:
                 copy_typ, _ = mail.uid("COPY", uid_b, "INBOX")
                 if copy_typ == "OK":
                     store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
                     if store_typ == "OK":
-                        auto_moved.append({**em, "matched_sender": sender_addr})
+                        moved_entry = {**em, "matched_sender": sender_addr}
+                        if al_rule is not None:
+                            moved_entry["matched_rule"] = {
+                                "type": al_rule.get("type", ""),
+                                "value": al_rule.get("value", ""),
+                                "id": al_rule.get("id", ""),
+                            }
+                        auto_moved.append(moved_entry)
                         any_deletion_flagged = True
                         continue
                     logging.warning(
