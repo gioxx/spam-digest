@@ -17,7 +17,7 @@ import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 
 DATA_DIR = "/data"
 STATE_FILE = os.path.join(DATA_DIR, "spam_digest_last_run.json")
@@ -589,7 +589,7 @@ def send_email(to_address, subject, html_body, from_address=None, extra_headers=
     EMAIL_PROVIDER. Returns (ok: bool, error_msg: str|None).
 
     extra_headers is an optional dict of header-name -> value applied to
-    the outgoing message (e.g. {"X-Mailer": "spam-digest/0.6.0"}).
+    the outgoing message (e.g. {"X-Mailer": "spam-digest/0.6.1"}).
     """
     if not to_address:
         return False, "missing recipient"
