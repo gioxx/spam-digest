@@ -163,7 +163,7 @@ def _decode_header_value(raw_value):
 
 
 def _apply_user_rules(mail, mails, mailbox_email):
-    """Apply blacklist filters (auto-delete) and allowlist (auto-move to INBOX)
+    """Apply blocklist filters (auto-delete) and allowlist (auto-move to INBOX)
     against the fetched mails list, reusing the open IMAP session.
 
     Returns (remaining_mails, auto_deleted, auto_moved).
@@ -172,7 +172,8 @@ def _apply_user_rules(mail, mails, mailbox_email):
     """
     filter_rules = shared.get_filter_rules(mailbox_email)
     allowlist = shared.get_allowlist_senders(mailbox_email)
-    if not filter_rules and not allowlist:
+    allowlist_rules = shared.get_allowlist_rules(mailbox_email)
+    if not filter_rules and not allowlist and not allowlist_rules:
         return mails, [], []
 
     remaining = []
@@ -186,7 +187,7 @@ def _apply_user_rules(mail, mails, mailbox_email):
         uid = em["uid"]
         uid_b = uid.encode() if isinstance(uid, str) else uid
 
-        # 1. Blacklist filter → auto-delete
+        # 1. Blocklist filter → auto-delete
         rule = shared.match_filter_rules(filter_rules, from_raw, subject)
         if rule is not None:
             try:
@@ -216,13 +217,22 @@ def _apply_user_rules(mail, mails, mailbox_email):
 
         # 2. Allowlist → auto-move to INBOX (COPY + \Deleted on source)
         sender_addr = shared.extract_sender_address(from_raw)
-        if sender_addr and sender_addr in allowlist:
+        al_rule = shared.match_allowlist_rules(allowlist_rules, from_raw, subject)
+        al_match = (sender_addr and sender_addr in allowlist) or al_rule is not None
+        if al_match:
             try:
                 copy_typ, _ = mail.uid("COPY", uid_b, "INBOX")
                 if copy_typ == "OK":
                     store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
                     if store_typ == "OK":
-                        auto_moved.append({**em, "matched_sender": sender_addr})
+                        moved_entry = {**em, "matched_sender": sender_addr}
+                        if al_rule is not None:
+                            moved_entry["matched_rule"] = {
+                                "type": al_rule.get("type", ""),
+                                "value": al_rule.get("value", ""),
+                                "id": al_rule.get("id", ""),
+                            }
+                        auto_moved.append(moved_entry)
                         any_deletion_flagged = True
                         continue
                     logging.warning(
@@ -368,7 +378,7 @@ def fetch_spam_emails(cfg):
             except Exception as e:
                 logging.warning("Error reading email UID %s: %s", num, e)
 
-        # Apply user-defined blacklist filters (auto-delete) and allowlist
+        # Apply user-defined blocklist filters (auto-delete) and allowlist
         # (auto-move to INBOX) in the same IMAP session before returning.
         mails, auto_deleted, auto_moved = _apply_user_rules(
             mail, mails, email_address
@@ -844,7 +854,7 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
                 f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
                 f"font-weight:600;text-decoration:none;letter-spacing:0.01em;"
                 f"border:1px solid #334155'>"
-                f"\u2699\ufe0e Manage blacklist filters"
+                f"\u2699\ufe0e Manage filters &amp; allowlist"
                 f"</a></div>"
             )
 

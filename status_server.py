@@ -668,10 +668,11 @@ _RULE_TYPE_LABELS = {
 }
 
 
-def _render_filters_page(email, token, rules, preview=None, banner=None, banner_kind="ok"):
+def _render_filters_page(email, token, rules, allowlist_rules=None, preview=None, al_preview=None, banner=None, banner_kind="ok"):
     """Render the /filters page HTML.
 
-    `preview` is an optional dict: {"rule_type", "value", "matches": [headers...], "total": int, "error": str|None}
+    `rules` — blocklist rules; `allowlist_rules` — allowlist rules.
+    `preview` / `al_preview` — optional preview result dicts for each section.
     `banner` is an optional flash message string; banner_kind in {"ok","err"}.
     """
     email_esc = escape(email)
@@ -770,33 +771,38 @@ def _render_filters_page(email, token, rules, preview=None, banner=None, banner_
                 + "</div>"
             )
 
-    def _opt(v, label):
-        sel = " selected" if v == prefill_type else ""
+    def _opt(v, label, sel_val):
+        sel = " selected" if v == sel_val else ""
         return f"<option value='{v}'{sel}>{label}</option>"
 
-    type_select = (
-        "<select name='rule_type' required "
-        "style='background:var(--surface);color:var(--text);border:1px solid var(--border);"
-        "border-radius:0.375rem;padding:0.45rem 0.6rem;font-size:0.875rem;font-family:inherit'>"
-        + _opt("sender_exact", "Sender address (exact match)")
-        + _opt("sender_domain", "Sender domain")
-        + _opt("subject_contains", "Subject contains text")
-        + "</select>"
-    )
-    value_input = (
-        f"<input name='value' type='text' value='{escape(prefill_value)}' required "
-        "placeholder='e.g. spam@bad.com  OR  bad.com  OR  SPECIAL OFFER' "
-        "style='flex:1;min-width:240px;background:var(--surface);color:var(--text);"
-        "border:1px solid var(--border);border-radius:0.375rem;padding:0.45rem 0.6rem;"
-        "font-size:0.875rem;font-family:var(--mono)'>"
-    )
+    def _type_select(name, sel_val):
+        return (
+            f"<select name='{name}' required "
+            "style='background:var(--surface);color:var(--text);border:1px solid var(--border);"
+            "border-radius:0.375rem;padding:0.45rem 0.6rem;font-size:0.875rem;font-family:inherit'>"
+            + _opt("sender_exact", "Sender address (exact match)", sel_val)
+            + _opt("sender_domain", "Sender domain", sel_val)
+            + _opt("subject_contains", "Subject contains text", sel_val)
+            + "</select>"
+        )
+
+    def _value_input(name, val, placeholder):
+        return (
+            f"<input name='{name}' type='text' value='{escape(val)}' required "
+            f"placeholder='{placeholder}' "
+            "style='flex:1;min-width:240px;background:var(--surface);color:var(--text);"
+            "border:1px solid var(--border);border-radius:0.375rem;padding:0.45rem 0.6rem;"
+            "font-size:0.875rem;font-family:var(--mono)'>"
+        )
+
     add_form = (
         f"<form method='POST' action='{form_action}' "
         "style='display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin-top:1rem;"
         "padding:1rem 1.25rem;background:var(--surface2);border:1px solid var(--border);"
         "border-radius:var(--radius)'>"
-        f"{type_select}{value_input}"
-        "<button type='submit' name='action' value='preview' "
+        + _type_select("rule_type", prefill_type)
+        + _value_input("value", prefill_value, "e.g. spam@bad.com  OR  bad.com  OR  SPECIAL OFFER")
+        + "<button type='submit' name='action' value='preview' "
         "style='background:transparent;color:var(--accent);border:1px solid var(--accent);"
         "padding:0.45rem 1rem;border-radius:0.375rem;font-size:0.8125rem;cursor:pointer;"
         "font-weight:500'>Preview matches</button>"
@@ -807,17 +813,132 @@ def _render_filters_page(email, token, rules, preview=None, banner=None, banner_
         "</form>"
     )
 
+    # --- Allowlist rules section ---
+    al_rules = allowlist_rules or []
+    al_prefill_type = ""
+    al_prefill_value = ""
+    al_preview_html = ""
+    if al_preview:
+        al_prefill_type = al_preview.get("rule_type", "") or ""
+        al_prefill_value = al_preview.get("value", "") or ""
+        if al_preview.get("error"):
+            al_preview_html = (
+                f"<div style='margin:1rem 0;padding:0.75rem 1rem;background:var(--err-dim);"
+                f"border:1px solid var(--err-border);border-radius:var(--radius);color:var(--err);"
+                f"font-size:0.875rem'>Preview failed: {escape(al_preview['error'])}</div>"
+            )
+        else:
+            al_total = al_preview.get("total", 0)
+            al_matches = al_preview.get("matches", [])
+            al_sample_rows = ""
+            for m in al_matches[:15]:
+                al_sample_rows += (
+                    "<tr>"
+                    f"<td style='padding:0.4rem 0.75rem;color:var(--muted);font-size:0.75rem;"
+                    f"font-family:var(--mono)'>{escape((m.get('from') or '')[:60])}</td>"
+                    f"<td style='padding:0.4rem 0.75rem;font-size:0.8125rem'>{escape((m.get('subject') or '')[:80])}</td>"
+                    "</tr>"
+                )
+            al_more = ""
+            if al_total > len(al_matches[:15]):
+                al_more = (
+                    f"<div style='color:var(--muted);font-size:0.75rem;padding:0.5rem 0.75rem'>"
+                    f"\u2026 and {al_total - len(al_matches[:15])} more.</div>"
+                )
+            al_color = "var(--ok)" if al_total > 0 else "var(--muted)"
+            al_preview_html = (
+                f"<div style='margin:1rem 0;padding:0.75rem 1rem;background:var(--surface2);"
+                f"border:1px solid var(--border);border-radius:var(--radius)'>"
+                f"<div style='color:{al_color};font-weight:600;font-size:0.875rem;margin-bottom:0.5rem'>"
+                f"Preview: {al_total} email(s) in the current spam folder would match this allowlist rule.</div>"
+                + (f"<table style='width:100%'><tbody>{al_sample_rows}</tbody></table>{al_more}" if al_matches else "")
+                + "</div>"
+            )
+
+    if al_rules:
+        al_rows = ""
+        for r in al_rules:
+            rid = escape(r.get("id", ""))
+            rtype = escape(_RULE_TYPE_LABELS.get(r.get("type", ""), r.get("type", "")))
+            rvalue = escape(r.get("value", ""))
+            added = escape(r.get("added_at", "") or "\u2014")
+            al_rows += (
+                f"<tr>"
+                f"<td style='padding:0.5rem 0.75rem;color:var(--muted);font-size:0.8125rem'>{rtype}</td>"
+                f"<td style='padding:0.5rem 0.75rem;font-family:var(--mono);font-size:0.8125rem'>{rvalue}</td>"
+                f"<td style='padding:0.5rem 0.75rem;color:var(--muted);font-size:0.75rem'>{added}</td>"
+                f"<td style='padding:0.5rem 0.75rem;text-align:right'>"
+                f"<form method='POST' action='{form_action}' style='display:inline' "
+                f"data-confirm='Remove this allowlist rule?' "
+                f"data-confirm-title='Remove rule' data-confirm-kind='danger'>"
+                f"<input type='hidden' name='action' value='remove_allowlist_rule'>"
+                f"<input type='hidden' name='rule_id' value='{rid}'>"
+                f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
+                f"border:1px solid var(--err-border);padding:0.25rem 0.65rem;border-radius:0.375rem;"
+                f"font-size:0.75rem;cursor:pointer'>Remove</button>"
+                f"</form></td></tr>"
+            )
+        al_table = (
+            "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
+            "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden'>"
+            "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Type</th>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Value</th>"
+            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
+            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Added</th>"
+            "<th></th></tr></thead>"
+            f"<tbody>{al_rows}</tbody></table>"
+        )
+    else:
+        al_table = (
+            "<div style='padding:1rem 1.25rem;background:var(--surface2);"
+            "border:1px solid var(--border);border-radius:var(--radius);color:var(--muted);"
+            "font-size:0.875rem'>No allowlist rules yet. Add your first one below.</div>"
+        )
+
+    al_add_form = (
+        f"<form method='POST' action='{form_action}' "
+        "style='display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin-top:1rem;"
+        "padding:1rem 1.25rem;background:var(--surface2);border:1px solid var(--border);"
+        "border-radius:var(--radius)'>"
+        + _type_select("al_rule_type", al_prefill_type)
+        + _value_input("al_value", al_prefill_value, "e.g. trusted@good.com  OR  good.com  OR  newsletter")
+        + "<button type='submit' name='action' value='preview_allowlist' "
+        "style='background:transparent;color:var(--accent);border:1px solid var(--accent);"
+        "padding:0.45rem 1rem;border-radius:0.375rem;font-size:0.8125rem;cursor:pointer;"
+        "font-weight:500'>Preview matches</button>"
+        "<button type='submit' name='action' value='add_allowlist_rule' "
+        "style='background:var(--ok);color:#fff;border:1px solid var(--ok);"
+        "padding:0.45rem 1rem;border-radius:0.375rem;font-size:0.8125rem;cursor:pointer;"
+        "font-weight:600'>Add rule</button>"
+        "</form>"
+    )
+
     body_html = (
         "<main style='max-width:960px;margin:2rem auto;padding:0 1.5rem'>"
         f"{banner_html}"
-        "<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.75rem'>Current rules</h2>"
+        "<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.75rem'>"
+        "\U0001f6ab Blocklist \u2014 auto-delete</h2>"
         "<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:0.75rem'>"
         "Matching emails are permanently deleted on the next digest run.</p>"
         f"{rules_table}"
-        "<h2 style='font-size:1.125rem;font-weight:600;margin:1.75rem 0 0.25rem'>Add a new rule</h2>"
+        "<h2 style='font-size:1.125rem;font-weight:600;margin:1.75rem 0 0.25rem'>Add a blocklist rule</h2>"
         "<p style='color:var(--muted);font-size:0.8125rem'>"
         "\u201cPreview matches\u201d counts how many emails currently in your spam folder would match, without saving.</p>"
         f"{preview_html}{add_form}"
+        "<hr style='margin:2rem 0;border:none;border-top:1px solid var(--border)'>"
+        "<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.75rem'>"
+        "\u2705 Allowlist \u2014 auto-move to INBOX</h2>"
+        "<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:0.75rem'>"
+        "Matching emails are automatically moved to your INBOX on the next digest run. "
+        "Individual senders trusted via the Review page are also in effect but managed separately.</p>"
+        f"{al_table}"
+        "<h2 style='font-size:1.125rem;font-weight:600;margin:1.75rem 0 0.25rem'>Add an allowlist rule</h2>"
+        "<p style='color:var(--muted);font-size:0.8125rem'>"
+        "\u201cPreview matches\u201d shows which emails in your spam folder would be moved to INBOX, without saving.</p>"
+        f"{al_preview_html}{al_add_form}"
         "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
         "This page is accessible only via the link emailed to you. "
         "To revoke the link, open the dashboard and click \u201c\u2699\ufe0e Filters\u201d next to this mailbox.</p>"
@@ -849,6 +970,7 @@ def _handle_filters_request(email, token, form=None):
     banner = None
     banner_kind = "ok"
     preview = None
+    al_preview = None
 
     if form is not None:
         action = (form.get("action", [""]) or [""])[0]
@@ -858,7 +980,7 @@ def _handle_filters_request(email, token, form=None):
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             try:
                 r = shared.add_filter_rule(email, rtype, value, now_str)
-                banner = f"Rule added: {_RULE_TYPE_LABELS.get(r['type'], r['type'])} = {r['value']}"
+                banner = f"Blocklist rule added: {_RULE_TYPE_LABELS.get(r['type'], r['type'])} = {r['value']}"
                 print(f"[filters] add_rule email={email} type={rtype} value={value}", flush=True)
             except ValueError as e:
                 banner = f"Could not add rule: {e}"
@@ -866,7 +988,7 @@ def _handle_filters_request(email, token, form=None):
         elif action == "remove_rule":
             rid = (form.get("rule_id", [""]) or [""])[0]
             if shared.remove_filter_rule(email, rid):
-                banner = "Rule removed."
+                banner = "Blocklist rule removed."
                 print(f"[filters] remove_rule email={email} id={rid}", flush=True)
             else:
                 banner = "Rule not found."
@@ -892,12 +1014,60 @@ def _handle_filters_request(email, token, form=None):
                         "rule_type": rtype, "value": value,
                         "matches": matches, "total": len(matches), "error": None,
                     }
+        elif action == "add_allowlist_rule":
+            rtype = (form.get("al_rule_type", [""]) or [""])[0]
+            value = (form.get("al_value", [""]) or [""])[0].strip()
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            try:
+                r = shared.add_allowlist_rule(email, rtype, value, now_str)
+                banner = f"Allowlist rule added: {_RULE_TYPE_LABELS.get(r['type'], r['type'])} = {r['value']}"
+                print(f"[filters] add_allowlist_rule email={email} type={rtype} value={value}", flush=True)
+            except ValueError as e:
+                banner = f"Could not add allowlist rule: {e}"
+                banner_kind = "err"
+        elif action == "remove_allowlist_rule":
+            rid = (form.get("rule_id", [""]) or [""])[0]
+            if shared.remove_allowlist_rule(email, rid):
+                banner = "Allowlist rule removed."
+                print(f"[filters] remove_allowlist_rule email={email} id={rid}", flush=True)
+            else:
+                banner = "Allowlist rule not found."
+                banner_kind = "err"
+        elif action == "preview_allowlist":
+            rtype = (form.get("al_rule_type", [""]) or [""])[0]
+            value = (form.get("al_value", [""]) or [""])[0].strip()
+            if rtype not in shared.ALLOWLIST_TYPES or not value:
+                al_preview = {
+                    "rule_type": rtype, "value": value,
+                    "matches": [], "total": 0,
+                    "error": "type and value are required",
+                }
+            else:
+                headers, err = _fetch_spam_headers(email, limit=300)
+                if err is not None:
+                    al_preview = {"rule_type": rtype, "value": value, "matches": [], "total": 0, "error": err}
+                else:
+                    rule = {"type": rtype, "value": value}
+                    matches = [h for h in headers
+                               if shared.match_allowlist_rules([rule], h.get("from", ""), h.get("subject", ""))]
+                    al_preview = {
+                        "rule_type": rtype, "value": value,
+                        "matches": matches, "total": len(matches), "error": None,
+                    }
         else:
             banner = "Unknown action."
             banner_kind = "err"
 
     rules = shared.get_filter_rules(email)
-    body = _render_filters_page(email, token, rules, preview=preview, banner=banner, banner_kind=banner_kind).encode("utf-8")
+    allowlist_rules = shared.get_allowlist_rules(email)
+    body = _render_filters_page(
+        email, token, rules,
+        allowlist_rules=allowlist_rules,
+        preview=preview,
+        al_preview=al_preview,
+        banner=banner,
+        banner_kind=banner_kind,
+    ).encode("utf-8")
     return 200, body, {"Content-Type": "text/html; charset=utf-8"}
 
 
@@ -912,7 +1082,7 @@ def _web_base_url():
 
 
 _PURPOSE_LABELS = {
-    shared.PURPOSE_FILTERS: "blacklist filters",
+    shared.PURPOSE_FILTERS: "filters & allowlist",
     shared.PURPOSE_REVIEW: "uncertain emails review",
 }
 

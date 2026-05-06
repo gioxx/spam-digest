@@ -16,7 +16,7 @@ A lightweight status dashboard is always available on port 8080.
 - **Multi-mailbox** — monitor as many IMAP accounts as you want in one container
 - **Smart folder detection** — auto-tries common spam folder names (`Junk`, `Spam`, `INBOX.Spam`, `[Gmail]/Spam`…)
 - **AI pre-filter (optional)** — Anthropic Claude classifies each email by sender + subject only (no body sent, minimal cost)
-- **Blacklist filters (new in 0.6)** — per-mailbox rules (sender, domain, subject keyword) that auto-delete matching emails at digest time, with a dry-run preview before saving
+- **Blocklist filters (new in 0.6)** — per-mailbox rules (sender, domain, subject keyword) that auto-delete matching emails at digest time, with a dry-run preview before saving
 - **Allowlist auto-move (new in 0.6)** — trusted senders are moved from spam to INBOX on every run, no manual step
 - **Review page for uncertain emails (new in 0.6)** — tokenised web page to either delete an uncertain email or trust its sender (adds to allowlist) in one click. The link is delivered automatically inside the digest email whenever uncertain items are present, and is rotated at every digest run so previous links stop working on their own.
 - **Skip-if-empty** — default behaviour: if no spam, no email; configurable to always send
@@ -215,7 +215,7 @@ The status dashboard (`:8080`) shows:
 
 ---
 
-## Blacklist filters & uncertain-email review (v0.6)
+## Filters, allowlist & uncertain-email review (v0.6)
 
 Two tokenised pages let you manage your mailbox without exposing a login on the dashboard:
 
