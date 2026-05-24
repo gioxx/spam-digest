@@ -9,6 +9,13 @@ rescue false positives before they disappear.
 
 A lightweight status dashboard is always available on port 8080.
 
+[![](https://img.shields.io/github/issues/gioxx/spam-digest.svg)](https://github.com/gioxx/spam-digest/issues)
+[![](https://img.shields.io/github/issues-pr-raw/gioxx/spam-digest.svg)](https://github.com/gioxx/spam-digest/pulls)
+[![MIT License](https://img.shields.io/github/license/gioxx/spam-digest)](https://github.com/gioxx/spam-digest/blob/main/LICENSE)
+[![](https://img.shields.io/badge/GHCR-available-blue?logo=docker)](https://github.com/users/gioxx/packages/container/package/spam-digest)
+[![](https://img.shields.io/docker/pulls/gfsolone/spam-digest.svg)](https://hub.docker.com/r/gfsolone/spam-digest)
+[![](https://img.shields.io/docker/image-size/gfsolone/spam-digest/latest.svg)](https://hub.docker.com/r/gfsolone/spam-digest)
+
 ---
 
 ## Features
