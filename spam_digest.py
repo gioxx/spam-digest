@@ -410,6 +410,51 @@ def _parse_ai_classifications(raw_text):
     return out
 
 
+# Output budget for the classification reply. On current models thinking
+# tokens count against max_tokens too, so this must leave room for both
+# the reasoning and a JSON array of up to AI_MAX_EMAILS entries.
+AI_MAX_OUTPUT_TOKENS = 16000
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+
+
+def _model_supports_effort(model):
+    """True when `model` accepts output_config.effort.
+
+    Effort exists on Opus 4.5+, Sonnet 4.6+, Haiku 5+ and the Fable/Mythos
+    families; older models (Haiku 4.5, Sonnet 4.5, Claude 3.x) reject it
+    with a 400. Unknown names get False: the request then just omits it.
+    """
+    m = re.match(r"claude-(haiku|sonnet|opus|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:-|$)", (model or "").strip())
+    if not m:
+        return False
+    family, major, minor = m.group(1), int(m.group(2)), int(m.group(3) or 0)
+    version = (major, minor)
+    if family in ("fable", "mythos"):
+        return True
+    if family == "opus":
+        return version >= (4, 5)
+    if family == "sonnet":
+        return version >= (4, 6)
+    return version >= (5, 0)  # haiku
+
+
+def _ai_request_body(model, prompt):
+    """Messages API body for the classification call.
+
+    Classification is a simple task: on models with adaptive thinking on by
+    default (e.g. Claude Haiku 5.5) low effort keeps the reasoning short, so
+    the answer is not crowded out of the output budget.
+    """
+    body = {
+        "model": model,
+        "max_tokens": AI_MAX_OUTPUT_TOKENS,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if _model_supports_effort(model):
+        body["output_config"] = {"effort": "low"}
+    return body
+
+
 def classify_with_ai(all_mailbox_results):
     """Call Anthropic Claude to classify spam emails. Modifies email dicts in-place."""
     provider = os.getenv("AI_PROVIDER", "none").strip().lower()
@@ -442,16 +487,13 @@ def classify_with_ai(all_mailbox_results):
     prompt = _build_ai_prompt(flat_emails)
 
     try:
+        import urllib.error
         import urllib.request
 
-        payload = json.dumps({
-            "model": model,
-            "max_tokens": 2048,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode("utf-8")
+        payload = json.dumps(_ai_request_body(model, prompt)).encode("utf-8")
 
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            ANTHROPIC_MESSAGES_URL,
             data=payload,
             method="POST",
             headers={
@@ -461,13 +503,38 @@ def classify_with_ai(all_mailbox_results):
             },
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            response_data = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                response_data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = json.loads(e.read().decode("utf-8")).get("error", {}).get("message", "")
+            except Exception:
+                pass
+            logging.error("AI classification failed: HTTP %s from Anthropic (model %s): %s",
+                          e.code, model, detail or e.reason)
+            return
+
+        stop_reason = response_data.get("stop_reason")
+        if stop_reason == "refusal":
+            details = response_data.get("stop_details") or {}
+            logging.error("AI classification refused by the model (category: %s). Emails left unclassified.",
+                          details.get("category") or "unknown")
+            return
 
         raw_text = ""
         for block in response_data.get("content", []):
             if block.get("type") == "text":
                 raw_text += block.get("text", "")
+
+        if stop_reason == "max_tokens":
+            logging.warning(
+                "AI reply hit max_tokens (%d) with %d email(s): the answer may be cut short. "
+                "Lower AI_MAX_EMAILS if this keeps happening.", AI_MAX_OUTPUT_TOKENS, len(flat_emails))
+        if not raw_text.strip():
+            logging.error("AI classification failed: the model returned no text (stop_reason=%s).", stop_reason)
+            return
 
         index_map = _parse_ai_classifications(raw_text)
         classified = 0
