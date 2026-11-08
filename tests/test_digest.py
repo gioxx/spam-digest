@@ -189,3 +189,95 @@ class ScheduleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AIRequestTests(unittest.TestCase):
+    """classify_with_ai against a fake Messages API (Codex review on #52)."""
+
+    def setUp(self):
+        import http.server
+        import threading
+        self.requests, self.reply = [], None
+        test = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                test.requests.append(body)
+                status, payload = test.reply
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self._orig_url = sd.ANTHROPIC_MESSAGES_URL
+        sd.ANTHROPIC_MESSAGES_URL = f"http://127.0.0.1:{self.srv.server_address[1]}/v1/messages"
+        self._env = {k: os.environ.get(k) for k in ("AI_PROVIDER", "AI_API_KEY", "AI_MODEL")}
+        os.environ.update({"AI_PROVIDER": "anthropic", "AI_API_KEY": "test"})
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        sd.ANTHROPIC_MESSAGES_URL = self._orig_url
+        for k, v in self._env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+    def run_ai(self, model):
+        os.environ["AI_MODEL"] = model
+        results = [{"emails": [mail("1", None), mail("2", None)]}]
+        with self.assertLogs(level="INFO") as logs:
+            sd.classify_with_ai(results)
+        return results[0]["emails"], "\n".join(logs.output)
+
+    def test_haiku_5_5_gets_low_effort_and_room_for_thinking(self):
+        self.reply = (200, {"stop_reason": "end_turn", "content": [
+            {"type": "thinking", "thinking": ""},
+            {"type": "text", "text": '[{"index":0,"label":"spam","reason":"a"},{"index":1,"label":"safe","reason":"b"}]'}]})
+        emails, _ = self.run_ai("claude-haiku-5-5")
+        body = self.requests[0]
+        self.assertEqual(body["output_config"], {"effort": "low"})
+        self.assertGreaterEqual(body["max_tokens"], 8000)
+        self.assertNotIn("thinking", body)
+        self.assertEqual([e["ai_label"] for e in emails], ["spam", "safe"])
+
+    def test_haiku_4_5_gets_no_effort(self):
+        self.reply = (200, {"stop_reason": "end_turn", "content": [{"type": "text", "text": "[]"}]})
+        self.run_ai("claude-haiku-4-5-20251001")
+        self.assertNotIn("output_config", self.requests[0])
+
+    def test_thinking_ate_the_budget(self):
+        self.reply = (200, {"stop_reason": "max_tokens", "content": [{"type": "thinking", "thinking": ""}]})
+        emails, logs = self.run_ai("claude-haiku-5-5")
+        self.assertIn("hit max_tokens", logs)
+        self.assertIn("returned no text", logs)
+        self.assertEqual([e["ai_label"] for e in emails], [None, None])
+
+    def test_refusal_is_reported(self):
+        self.reply = (200, {"stop_reason": "refusal", "stop_details": {"category": "cyber"}, "content": []})
+        _, logs = self.run_ai("claude-haiku-5-5")
+        self.assertIn("refused by the model (category: cyber)", logs)
+
+    def test_http_error_message_is_logged(self):
+        self.reply = (400, {"type": "error", "error": {"type": "invalid_request_error",
+                                                       "message": "effort is not supported on this model"}})
+        _, logs = self.run_ai("claude-haiku-5-5")
+        self.assertIn("HTTP 400", logs)
+        self.assertIn("effort is not supported on this model", logs)
+
+    def test_effort_support_by_model(self):
+        yes = ("claude-haiku-5-5", "claude-sonnet-4-6", "claude-sonnet-5-5", "claude-opus-4-5", "claude-opus-5", "claude-fable-5-1")
+        no = ("claude-haiku-4-5-20251001", "claude-sonnet-4-5", "claude-opus-4-1", "claude-opus-4-20250514",
+              "claude-3-5-haiku-20241022", "", "custom-model")
+        for m in yes:
+            self.assertTrue(sd._model_supports_effort(m), m)
+        for m in no:
+            self.assertFalse(sd._model_supports_effort(m), m)
