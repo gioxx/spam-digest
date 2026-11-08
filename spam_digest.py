@@ -14,6 +14,7 @@ import imaplib
 import json
 import logging
 import os
+import re
 import socket
 import ssl
 import sys
@@ -34,6 +35,7 @@ SECRET_FILE = shared.SECRET_FILE
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
 DEFAULT_AI_MAX_EMAILS = 50
+IMAP_TIMEOUT_SECS = 60
 
 
 # ---------------------------------------------------------------------------
@@ -162,13 +164,16 @@ def _decode_header_value(raw_value):
     return "".join(decoded)
 
 
-def _apply_user_rules(mail, mails, mailbox_email):
+def _apply_user_rules(mail, mails, mailbox_email, dry_run=False):
     """Apply blocklist filters (auto-delete) and allowlist (auto-move to INBOX)
     against the fetched mails list, reusing the open IMAP session.
 
     Returns (remaining_mails, auto_deleted, auto_moved).
     Partial failures are logged; the affected email stays in `remaining_mails`
     and will appear in the digest as usual.
+
+    With dry_run=True no IMAP command is issued: matches are reported (so the
+    preview digest looks like the real one) but nothing is deleted or moved.
     """
     filter_rules = shared.get_filter_rules(mailbox_email)
     allowlist = shared.get_allowlist_senders(mailbox_email)
@@ -191,7 +196,7 @@ def _apply_user_rules(mail, mails, mailbox_email):
         rule = shared.match_filter_rules(filter_rules, from_raw, subject)
         if rule is not None:
             try:
-                typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+                typ = "OK" if dry_run else mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")[0]
                 if typ == "OK":
                     auto_deleted.append({
                         **em,
@@ -221,9 +226,9 @@ def _apply_user_rules(mail, mails, mailbox_email):
         al_match = (sender_addr and sender_addr in allowlist) or al_rule is not None
         if al_match:
             try:
-                copy_typ, _ = mail.uid("COPY", uid_b, "INBOX")
+                copy_typ = "OK" if dry_run else mail.uid("COPY", uid_b, "INBOX")[0]
                 if copy_typ == "OK":
-                    store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
+                    store_typ = "OK" if dry_run else mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")[0]
                     if store_typ == "OK":
                         moved_entry = {**em, "matched_sender": sender_addr}
                         if al_rule is not None:
@@ -254,7 +259,7 @@ def _apply_user_rules(mail, mails, mailbox_email):
 
         remaining.append(em)
 
-    if any_deletion_flagged:
+    if any_deletion_flagged and not dry_run:
         try:
             mail.expunge()
         except Exception as e:
@@ -262,19 +267,26 @@ def _apply_user_rules(mail, mails, mailbox_email):
 
     if auto_deleted:
         logging.info(
-            "Auto-deleted %d email(s) from %s by user filter rules.",
+            "%s %d email(s) from %s by user filter rules.",
+            "Dry-run: would auto-delete" if dry_run else "Auto-deleted",
             len(auto_deleted), mailbox_email,
         )
     if auto_moved:
         logging.info(
-            "Auto-moved %d allowlisted email(s) from spam to INBOX for %s.",
+            "%s %d allowlisted email(s) from spam to INBOX for %s.",
+            "Dry-run: would auto-move" if dry_run else "Auto-moved",
             len(auto_moved), mailbox_email,
         )
     return remaining, auto_deleted, auto_moved
 
 
-def fetch_spam_emails(cfg):
-    """Return a list of dicts with basic metadata for each spam email."""
+def fetch_spam_emails(cfg, dry_run=False):
+    """Return a list of dicts with basic metadata for each spam email.
+
+    `spam_folder` in the result is the folder actually selected (it may be a
+    fallback alias when the configured one does not exist). UIDs are only
+    meaningful inside that folder, so later web actions must use it.
+    """
     start = time.monotonic()
     mails = []
     auto_deleted = []
@@ -297,9 +309,9 @@ def fetch_spam_emails(cfg):
 
     try:
         if imap_use_ssl:
-            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+            mail = imaplib.IMAP4_SSL(imap_server, imap_port, timeout=IMAP_TIMEOUT_SECS)
         else:
-            mail = imaplib.IMAP4(imap_server, imap_port)
+            mail = imaplib.IMAP4(imap_server, imap_port, timeout=IMAP_TIMEOUT_SECS)
         mail.login(email_user, email_pass)
 
         # Try to select the spam folder; attempt common aliases if not found.
@@ -311,6 +323,7 @@ def fetch_spam_emails(cfg):
                 if res == "OK":
                     if folder != spam_folder:
                         logging.info("Spam folder '%s' not found; using '%s' instead.", spam_folder, folder)
+                        spam_folder = folder
                     selected = True
                     break
             except Exception:
@@ -344,7 +357,6 @@ def fetch_spam_emails(cfg):
 
                 # Parse size from FETCH response
                 size_bytes = 0
-                import re
                 size_match = re.search(r"RFC822\.SIZE (\d+)", raw_info)
                 if size_match:
                     size_bytes = int(size_match.group(1))
@@ -381,7 +393,7 @@ def fetch_spam_emails(cfg):
         # Apply user-defined blocklist filters (auto-delete) and allowlist
         # (auto-move to INBOX) in the same IMAP session before returning.
         mails, auto_deleted, auto_moved = _apply_user_rules(
-            mail, mails, email_address
+            mail, mails, email_address, dry_run=dry_run
         )
 
     except ssl.SSLError as e:
@@ -445,6 +457,38 @@ def _build_ai_prompt(emails):
     )
 
 
+def _parse_ai_classifications(raw_text):
+    """Parse the model reply into {index: (label, reason)}.
+
+    Tolerates markdown fences or prose around the JSON array, string or
+    float indexes, missing/invalid labels (→ "uncertain") and non-string
+    reasons. Entries without a usable index are skipped. Raises ValueError
+    if no JSON array can be found at all.
+    """
+    text = (raw_text or "").strip()
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON array in AI response")
+    items = json.loads(text[start:end + 1])
+    if not isinstance(items, list):
+        raise ValueError("AI response is not a JSON array")
+    out = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        label = str(item.get("label") or "").strip().lower()
+        if label not in ("safe", "uncertain", "spam"):
+            label = "uncertain"
+        reason = item.get("reason")
+        reason = "" if reason is None else str(reason).strip()[:200]
+        out.setdefault(idx, (label, reason))
+    return out
+
+
 def classify_with_ai(all_mailbox_results):
     """Call Anthropic Claude to classify spam emails. Modifies email dicts in-place."""
     provider = os.getenv("AI_PROVIDER", "none").strip().lower()
@@ -504,25 +548,18 @@ def classify_with_ai(all_mailbox_results):
             if block.get("type") == "text":
                 raw_text += block.get("text", "")
 
-        raw_text = raw_text.strip()
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("\n", 1)[-1]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[: raw_text.rfind("```")]
-
-        classifications = json.loads(raw_text.strip())
-        index_map = {item["index"]: item for item in classifications if isinstance(item, dict)}
-
+        index_map = _parse_ai_classifications(raw_text)
+        classified = 0
         for i, em in enumerate(flat_emails):
             entry = index_map.get(i)
             if entry:
-                label = entry.get("label", "uncertain")
-                if label not in ("safe", "uncertain", "spam"):
-                    label = "uncertain"
-                em["ai_label"] = label
-                em["ai_reason"] = entry.get("reason", "")
+                em["ai_label"], em["ai_reason"] = entry
+                classified += 1
 
-        logging.info("AI classification complete.")
+        logging.info(
+            "AI classification complete: %d/%d email(s) classified.",
+            classified, len(flat_emails),
+        )
 
     except Exception as e:
         logging.error("AI classification failed: %s", e)
@@ -919,67 +956,90 @@ def send_digest_email(html_body, subject, generated_at, to_address):
 # State persistence
 # ---------------------------------------------------------------------------
 
-def save_state(results, generated_at, total_count):
-    # Load existing state so we can merge per-mailbox entries rather than overwrite.
-    existing_mailboxes = {}
-    try:
-        with open(STATE_FILE) as f:
-            prev = json.load(f)
-        for mb in prev.get("mailboxes", []):
-            addr = mb.get("email_address", "")
-            if addr:
-                existing_mailboxes[addr] = mb
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-
-    for r in results:
-        addr = r["email_address"]
-        confirmed_uids = [
-            e["uid"] for e in r.get("emails", [])
-            if e.get("ai_label") == "spam"
-        ]
-        def _review_entries(label):
-            return [
-                {
-                    "uid": e["uid"],
-                    "subject": e.get("subject") or "",
-                    "from": e.get("from") or "",
-                    "date": e.get("date") or "",
-                    "ai_reason": e.get("ai_reason") or "",
-                }
-                for e in r.get("emails", [])
-                if e.get("ai_label") == label
-            ]
-
-        uncertain_entries = _review_entries("uncertain")
-        safe_entries = _review_entries("safe")
-        existing_mailboxes[addr] = {
-            "email_address": addr,
-            "digest_to": r.get("digest_to") or addr,
-            "spam_folder": r["spam_folder"],
-            "status": r["status"],
-            "count": r["count"],
-            "duration_seconds": round(r["duration_seconds"], 3),
-            "error_message": r.get("error_message"),
-            "sent": r.get("sent", False),
-            "last_run": generated_at,
-            "confirmed_spam_uids": confirmed_uids,
-            "uncertain_emails": uncertain_entries,
-            "safe_emails": safe_entries,
+def _review_entries(result, label):
+    return [
+        {
+            "uid": e["uid"],
+            "subject": e.get("subject") or "",
+            "from": e.get("from") or "",
+            "date": e.get("date") or "",
+            "ai_reason": e.get("ai_reason") or "",
         }
+        for e in result.get("emails", [])
+        if e.get("ai_label") == label
+    ]
 
-    merged_mailboxes = list(existing_mailboxes.values())
-    state = {
-        "timestamp": generated_at,
-        "total_count": sum(mb.get("count", 0) for mb in merged_mailboxes),
-        "sent": any(mb.get("sent") for mb in merged_mailboxes),
-        "mailboxes": merged_mailboxes,
-    }
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except OSError as e:
-        logging.warning("Could not write state file %s: %s", STATE_FILE, e)
+
+def save_state(results, generated_at, total_count):
+    """Merge this run's per-mailbox results into the state file.
+
+    Runs under shared.data_lock() and writes atomically, so it cannot
+    interleave with a web-server action editing the same file. When a
+    mailbox fetch failed, the actionable lists from the previous run
+    (confirmed spam UIDs, uncertain/safe review lists, spam folder) are
+    kept: a transient IMAP error must not wipe links the user may still
+    click from the previous digest.
+    """
+    with shared.data_lock():
+        existing_mailboxes = {}
+        try:
+            with open(STATE_FILE) as f:
+                prev = json.load(f)
+            for mb in prev.get("mailboxes", []):
+                addr = mb.get("email_address", "")
+                if addr:
+                    existing_mailboxes[addr] = mb
+        except FileNotFoundError:
+            pass
+        except (OSError, json.JSONDecodeError) as e:
+            logging.warning("State file %s unreadable (%s); starting fresh.", STATE_FILE, e)
+
+        for r in results:
+            addr = r["email_address"]
+            prev_mb = existing_mailboxes.get(addr) or {}
+            entry = {
+                "email_address": addr,
+                "digest_to": r.get("digest_to") or addr,
+                "spam_folder": r["spam_folder"],
+                "status": r["status"],
+                "count": r["count"],
+                "duration_seconds": round(r["duration_seconds"], 3),
+                "error_message": r.get("error_message"),
+                "sent": r.get("sent", False),
+                "last_run": generated_at,
+                "confirmed_spam_uids": [
+                    e["uid"] for e in r.get("emails", []) if e.get("ai_label") == "spam"
+                ],
+                "uncertain_emails": _review_entries(r, "uncertain"),
+                "safe_emails": _review_entries(r, "safe"),
+            }
+            if r["status"] == "error" and prev_mb:
+                for key in ("spam_folder", "confirmed_spam_uids", "uncertain_emails",
+                            "safe_emails"):
+                    if key in prev_mb:
+                        entry[key] = prev_mb[key]
+                # State files written before 0.7.0 have no spam_run_ts: the
+                # previous last_run is the timestamp that link was signed with.
+                prev_ts = prev_mb.get("spam_run_ts") or prev_mb.get("last_run")
+                if entry.get("confirmed_spam_uids") and prev_ts:
+                    entry["spam_run_ts"] = prev_ts
+            elif entry["confirmed_spam_uids"]:
+                # Timestamp the delete-spam link was signed with. Only that
+                # link may act on these UIDs (see status_server._do_delete_spam).
+                entry["spam_run_ts"] = generated_at
+            existing_mailboxes[addr] = entry
+
+        merged_mailboxes = list(existing_mailboxes.values())
+        state = {
+            "timestamp": generated_at,
+            "total_count": sum(mb.get("count", 0) for mb in merged_mailboxes),
+            "sent": any(mb.get("sent") for mb in merged_mailboxes),
+            "mailboxes": merged_mailboxes,
+        }
+        try:
+            shared.atomic_write_json(STATE_FILE, state)
+        except OSError as e:
+            logging.warning("Could not write state file %s: %s", STATE_FILE, e)
 
 
 # ---------------------------------------------------------------------------
@@ -1028,7 +1088,7 @@ def main():
                 "sent": False,
             })
             continue
-        result = fetch_spam_emails(cfg)
+        result = fetch_spam_emails(cfg, dry_run=args.dry_run)
         result["sent"] = False
         results.append(result)
 
@@ -1041,7 +1101,8 @@ def main():
 
     if total_count == 0 and total_auto == 0 and not send_if_empty:
         logging.info("No spam emails found and SEND_IF_EMPTY is false. Digest will not be sent.")
-        save_state(results, generated_at, total_count=0)
+        if not args.dry_run:
+            save_state(results, generated_at, total_count=0)
         sys.exit(0)
 
     classify_with_ai(results)
@@ -1150,7 +1211,10 @@ def main():
                 for (addr, purpose), nonce in pending_nonces.items():
                     shared.commit_nonce(addr, purpose, nonce)
 
-    save_state(results, generated_at, total_count=total_count)
+    if args.dry_run:
+        logging.info("Dry-run mode: state file not updated.")
+    else:
+        save_state(results, generated_at, total_count=total_count)
 
 
 if __name__ == "__main__":
