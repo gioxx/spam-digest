@@ -46,6 +46,10 @@ services:
       SCHEDULE_DAY: "*"
       RUN_ON_START: "false"   # set to "true" to also run at container startup
 
+      # --- Dashboard login (optional, HTTP Basic) ---
+      # DASHBOARD_USER: admin
+      # DASHBOARD_PASS: change-me
+
     # --- Multi-mailbox example (uncomment and remove single mailbox vars above) ---
     # environment:
     #   MAILBOX_CONFIGS: |

@@ -5,6 +5,7 @@ Always started by entrypoint.sh inside the Docker container.
 Listens on WEB_PORT (default 8080).
 """
 
+import base64
 import collections
 import datetime
 import hmac
@@ -1389,7 +1390,7 @@ def _active_env_vars():
         "RESEND_API_KEY", "DIGEST_TO", "DIGEST_FROM",
         "AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS",
         "SEND_IF_EMPTY", "SCHEDULE_MIN", "SCHEDULE_HOUR", "SCHEDULE_DAY",
-        "WEB_PORT", "WEB_BASE_URL", "RUN_ON_START", "TZ",
+        "WEB_PORT", "WEB_BASE_URL", "DASHBOARD_USER", "DASHBOARD_PASS", "RUN_ON_START", "TZ",
     )
     return {k for k in candidates if os.getenv(k)}
 
@@ -1701,6 +1702,8 @@ def _render_guide(active_vars):
         section("Web dashboard / misc"),
         row("WEB_PORT",       "8080",  "Port for the status dashboard."),
         row("WEB_BASE_URL",   "",      "Public base URL of the dashboard (e.g. <code>http://192.168.1.10:8080</code>). Required to include the <em>Delete confirmed spam</em> link in digest emails."),
+        row("DASHBOARD_USER", "admin", "Username for the dashboard login (only used when <code>DASHBOARD_PASS</code> is set)."),
+        row("DASHBOARD_PASS", "",      "Enables HTTP Basic login on the dashboard and its actions. The review, filters and delete pages keep using their signed links."),
         row("RUN_ON_START",   "false", "Run the digest immediately on container start. Default: <code>false</code> (rely on cron schedule)."),
         row("TZ",             "UTC",   "Container timezone. Example: <code>Europe/Rome</code>."),
     ])
@@ -1905,6 +1908,37 @@ _TOKENIZED_PATHS = ("/filters", "/review", "/action/delete-spam", "/action/regen
 _DASHBOARD_POST_PATHS = (
     "/action/run-now", "/action/run-mailbox", "/action/dry-run", "/action/regenerate-link",
 )
+# Pages protected by the optional dashboard login (DASHBOARD_PASS). The
+# tokenised routes are not: their signed link is the credential.
+_DASHBOARD_PAGES = ("/", "/status", "/index.html")
+
+
+def _dashboard_credentials():
+    """Return (user, password) when the dashboard login is enabled, else None.
+
+    Enabled by a non-empty DASHBOARD_PASS; DASHBOARD_USER defaults to "admin".
+    """
+    password = os.getenv("DASHBOARD_PASS") or ""
+    if not password:
+        return None
+    return (os.getenv("DASHBOARD_USER") or "admin"), password
+
+
+def _check_basic_auth(header_value, creds):
+    """Constant-time check of an HTTP Basic Authorization header."""
+    if not header_value or not header_value.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header_value[6:].strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    user, sep, password = decoded.partition(":")
+    if not sep:
+        return False
+    exp_user, exp_pass = creds
+    user_ok = hmac.compare_digest(user.encode("utf-8"), exp_user.encode("utf-8"))
+    pass_ok = hmac.compare_digest(password.encode("utf-8"), exp_pass.encode("utf-8"))
+    return user_ok and pass_ok
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -1921,6 +1955,37 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
         super().end_headers()
+
+    def _require_dashboard_auth(self, path):
+        """Return True (and respond) when the dashboard login blocks this request.
+
+        Only dashboard pages and dashboard actions are protected, and only
+        when DASHBOARD_PASS is set. Failed attempts count against the
+        per-IP rate limit, so guessing gets a 429 after a few tries.
+        """
+        if path not in _DASHBOARD_PAGES and path not in _DASHBOARD_POST_PATHS:
+            return False
+        creds = _dashboard_credentials()
+        if creds is None or _check_basic_auth(self.headers.get("Authorization"), creds):
+            return False
+        ip = self._client_ip()
+        if self.headers.get("Authorization") and not _rate_limit_check(ip):
+            _log_action(ip, f"{self.command} {path}", result="rate_limited", detail="dashboard auth")
+            body = b"Too many requests. Try again in a minute."
+            self.send_response(429)
+            self.send_header("Retry-After", str(_RATE_LIMIT_WINDOW_SECS))
+        else:
+            if self.headers.get("Authorization"):
+                _log_action(ip, f"{self.command} {path}", result="unauthorized", detail="dashboard auth")
+            body = b"Authentication required."
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="Spam-Digest", charset="UTF-8"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
 
     def _reject_cross_site(self):
         """Return True (and respond 403) for a cross-site browser request.
@@ -1958,6 +2023,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if self._require_dashboard_auth(parsed.path):
+            return
         if parsed.path.startswith(_TOKENIZED_PATHS) and self._enforce_rate_limit(
             f"GET {parsed.path}"
         ):
@@ -2041,6 +2108,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if self._require_dashboard_auth(path):
+            return
         if path.startswith(_TOKENIZED_PATHS) and self._enforce_rate_limit(f"POST {path}"):
             return
         if path in _DASHBOARD_POST_PATHS and self._reject_cross_site():
