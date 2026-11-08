@@ -1516,6 +1516,8 @@ details[open] summary { border-bottom: 1px solid var(--border); }
 .guide-section-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text); font-weight: 700; padding: 0.7rem 0.85rem 0.4rem 1rem; border-top: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--surface2); }
 .guide-section-label:first-child { border-top: none; }
 footer { text-align: center; padding: 1.5rem; font-size: 0.75rem; color: var(--muted); border-top: 1px solid var(--border); margin-top: 1rem; }
+footer .sep { margin: 0 .45rem; opacity: .6; }
+footer .ver { font-family: var(--mono); }
 /* ── responsive ── */
 main > * { min-width: 0; }
 .grid-2 > * { min-width: 0; }
@@ -1622,9 +1624,28 @@ def _page_shell(page_title, subtitle_html, body_html,
         f'{_MODAL_JS}'
         f'{extra_scripts}'
         '</script>'
-        '<footer><a href="https://github.com/gioxx/spam-digest" target="_blank" rel="noopener">gioxx/spam-digest</a> &nbsp;&middot;&nbsp; MIT License</footer>'
+        f'<footer>{_FOOTER_LINKS}</footer>'
         '</body></html>'
     )
+
+
+def _footer_links():
+    links = (
+        ("https://spamdigest.gioxx.org", "Website"),
+        ("https://kb.gioxx.org/Projects/spam-digest", "Documentation"),
+        (f"https://github.com/gioxx/spam-digest/releases/tag/{APP_VERSION}", None),
+        ("https://github.com/gioxx/spam-digest/issues", "Report an issue"),
+        ("https://github.com/gioxx/spam-digest", "GitHub"),
+    )
+    parts = []
+    for href, label in links:
+        text = f"<span class='ver'>v{escape(APP_VERSION)}</span>" if label is None else escape(label)
+        parts.append(f"<a href='{href}' target='_blank' rel='noopener'>{text}</a>")
+    parts.append("MIT License")
+    return "<span class='sep'>&middot;</span>".join(parts)
+
+
+_FOOTER_LINKS = _footer_links()
 
 
 def _render_result_page(page_title, subtitle_html, status_word, status_color, message,
