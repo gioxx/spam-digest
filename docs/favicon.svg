@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Background tile -->
+  <rect x="4" y="4" width="92" height="92" rx="20" fill="#111827"/>
+  <!-- Shield -->
+  <path d="M50 16 L78 26 V48 C78 66 66 78 50 85 C34 78 22 66 22 48 V26 Z" fill="#1e3a5f" stroke="#60a5fa" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Envelope -->
+  <rect x="34" y="38" width="32" height="22" rx="3" fill="#f1f5f9"/>
+  <path d="M35 40 L50 51 L65 40" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

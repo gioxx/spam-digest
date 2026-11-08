@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>spam-digest — Daily spam folder digest with AI triage</title>
+  <meta name="description" content="Self-hosted Docker app that reads your IMAP spam folders, sorts each email with optional AI, and emails you a digest you can act on from a web page: rescue, trust, delete.">
+  <link rel="canonical" href="https://spamdigest.gioxx.org/">
+  <meta name="theme-color" content="#111827">
+
+  <!-- Social previews (Open Graph: Facebook, LinkedIn, Slack, Telegram, WhatsApp, Discord…) -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="spam-digest">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:url" content="https://spamdigest.gioxx.org/">
+  <meta property="og:title" content="spam-digest — Daily spam folder digest with AI triage">
+  <meta property="og:description" content="Self-hosted Docker app that turns your IMAP spam folders into a daily digest, sorted by AI, with one-click rescue and delete.">
+  <meta property="og:image" content="https://spamdigest.gioxx.org/img/og-image.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="spam-digest: daily spam folder digest with AI triage, with a screenshot of the review page">
+
+  <!-- X / Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="spam-digest — Daily spam folder digest with AI triage">
+  <meta name="twitter:description" content="Self-hosted Docker app that turns your IMAP spam folders into a daily digest, sorted by AI, with one-click rescue and delete.">
+  <meta name="twitter:image" content="https://spamdigest.gioxx.org/img/og-image.png">
+  <meta name="twitter:image:alt" content="spam-digest: daily spam folder digest with AI triage, with a screenshot of the review page">
+
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f0f2f5;
+      --card: #fff;
+      --dark: #111827;
+      --dark2: #1f2937;
+      --accent: #2563eb;
+      --accent-light: #dbeafe;
+      --text: #1a1a1a;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --radius: 12px;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+    }
+
+    html { scroll-behavior: smooth; scroll-padding-top: 56px; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    img { max-width: 100%; height: auto; display: block; }
+    code { font-family: var(--mono); font-size: 0.86em; background: #eef1f5; padding: 0.1em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+
+    /* NAV */
+    nav {
+      background: var(--dark);
+      padding: 0 2rem;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    nav .logo { color: #fff; font-weight: 700; font-size: 1.1rem; letter-spacing: -0.01em; display: flex; align-items: center; gap: 0.6rem; }
+    nav .logo .name span { color: #60a5fa; }
+    nav .logo .ver { font: 600 0.72rem var(--mono); color: #9ca3af; border: 1px solid #374151; border-radius: 999px; padding: 0.1em 0.6em; }
+    nav .logo .ver:hover { color: #fff; border-color: #60a5fa; text-decoration: none; }
+    nav .nav-links { display: flex; gap: 1.5rem; }
+    nav .nav-links a { color: #9ca3af; font-size: 0.9rem; transition: color 0.15s; position: relative; }
+    nav .nav-links a:hover { color: #fff; text-decoration: none; }
+    nav .nav-links a.active { color: #fff; }
+    nav .nav-links a.active::after {
+      content: "";
+      position: absolute;
+      left: 0; right: 0; bottom: -6px;
+      height: 2px;
+      border-radius: 2px;
+      background: #60a5fa;
+    }
+
+    /* HERO */
+    .hero {
+      background: linear-gradient(135deg, var(--dark) 0%, #1e3a5f 100%);
+      color: #fff;
+      padding: 6rem 2rem 0;
+      text-align: center;
+      overflow: hidden;
+    }
+    .hero h1 {
+      font-size: clamp(2.2rem, 5vw, 3.5rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      margin-bottom: 1.2rem;
+    }
+    .hero h1 span { color: #60a5fa; }
+    .hero p { font-size: 1.15rem; color: #9ca3af; max-width: 640px; margin: 0 auto 2.5rem; }
+    .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-bottom: 4rem; }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      padding: 0.75em 1.75em;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: background 0.15s;
+    }
+    .btn-primary:hover { background: #1d4ed8; text-decoration: none; }
+    .btn-ghost {
+      background: rgba(255,255,255,0.08);
+      color: #e5e7eb;
+      padding: 0.75em 1.75em;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      border: 1px solid rgba(255,255,255,0.15);
+      transition: background 0.15s;
+    }
+    .btn-ghost:hover { background: rgba(255,255,255,0.14); text-decoration: none; }
+    .hero-shot {
+      max-width: 1000px;
+      margin: 0 auto;
+      border-radius: 12px 12px 0 0;
+      overflow: hidden;
+      box-shadow: 0 -10px 60px rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-bottom: 0;
+      position: relative;
+      max-height: 520px;
+    }
+    .hero-shot::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0 0;
+      height: 140px;
+      background: linear-gradient(to bottom, rgba(255,255,255,0), var(--card));
+    }
+
+    /* SECTIONS */
+    section { padding: 5rem 2rem; }
+    .container { max-width: 1100px; margin: 0 auto; }
+    .section-label {
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+    }
+    .section-title {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 1rem;
+    }
+    .section-sub { color: var(--muted); font-size: 1rem; max-width: 640px; margin-bottom: 3rem; }
+
+    /* FEATURES GRID */
+    .features { background: var(--card); }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+    .feature-card {
+      background: var(--bg);
+      border-radius: var(--radius);
+      padding: 1.75rem;
+      border: 1px solid var(--border);
+    }
+    .feature-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: var(--accent-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1rem;
+    }
+    /* Icons: Lucide (https://lucide.dev), ISC license; full notice in third-party-notices.txt */
+    .feature-icon svg {
+      width: 22px;
+      height: 22px;
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .feature-card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.4rem; }
+    .feature-card p { font-size: 0.88rem; color: var(--muted); line-height: 1.5; }
+
+    /* SCREENSHOTS */
+    .shots { background: var(--bg); }
+    .shot {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(17,24,39,0.08);
+    }
+    .shot img { width: 100%; height: auto; }
+    .shot-scroll { max-height: 640px; overflow-y: auto; }
+    .shot-caption { margin-top: 0.9rem; font-size: 0.88rem; color: var(--muted); }
+    .shot-caption strong { color: var(--text); }
+    .shots-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start; margin-top: 3rem; }
+    .shots-grid > div { min-width: 0; }
+
+    /* HOW IT WORKS */
+    .how { background: var(--card); }
+    .steps { display: flex; flex-direction: column; gap: 0; max-width: 720px; }
+    .step { display: flex; gap: 1.5rem; padding-bottom: 2.5rem; position: relative; }
+    .step:not(:last-child)::before {
+      content: "";
+      position: absolute;
+      left: 19px;
+      top: 40px;
+      bottom: 0;
+      width: 2px;
+      background: var(--border);
+    }
+    .step-num {
+      flex-shrink: 0;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--dark);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+      position: relative;
+      z-index: 1;
+    }
+    .step-body { min-width: 0; }
+    .step-body h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.3rem; padding-top: 0.5rem; }
+    .step-body p { font-size: 0.9rem; color: var(--muted); }
+
+    /* INSTALL */
+    .install { background: var(--dark); color: #fff; }
+    .install .section-title { color: #fff; }
+    .install .section-sub { color: #9ca3af; }
+    .install .section-label { color: #60a5fa; }
+    .install-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 2rem; }
+    .install-grid > div { min-width: 0; }
+    .install h3 { font-size: 1rem; margin-bottom: 0.75rem; color: #e5e7eb; }
+    .install p.note { color: #9ca3af; font-size: 0.88rem; margin-top: 0.9rem; }
+    .install p.note strong, .install p.note code { color: #e2e8f0; }
+    .install code { background: #1e293b; }
+    .images { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 2.5rem; }
+    .image-pill {
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      background: #0f172a;
+      border: 1px solid #1e3a5f;
+      border-radius: 8px;
+      padding: 0.5em 0.9em;
+      color: #e2e8f0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+    .image-pill span { color: #60a5fa; }
+    pre {
+      background: #0f172a;
+      border: 1px solid #1e3a5f;
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.84rem;
+      line-height: 1.7;
+      color: #e2e8f0;
+    }
+    pre .comment { color: #64748b; }
+    pre .key { color: #60a5fa; }
+    pre .str { color: #86efac; }
+
+    /* DOCS */
+    .docs { background: var(--bg); }
+    .docs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.25rem; }
+    .doc-card {
+      display: block;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.4rem 1.5rem;
+      color: var(--text);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .doc-card:hover { border-color: var(--accent); box-shadow: 0 6px 20px rgba(37,99,235,0.1); text-decoration: none; }
+    .doc-card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.35rem; }
+    .doc-card h3::after { content: " \2192"; color: var(--accent); }
+    .doc-card p { font-size: 0.88rem; color: var(--muted); line-height: 1.5; }
+    .callout {
+      background: var(--accent-light);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      padding: 0.9rem 1.1rem;
+      font-size: 0.9rem;
+      color: #1e3a8a;
+      margin: 2rem 0 0;
+    }
+    .callout code { background: rgba(255,255,255,0.6); }
+
+    /* FOOTER */
+    footer {
+      background: var(--dark2);
+      color: #9ca3af;
+      text-align: center;
+      padding: 2rem;
+      font-size: 0.82rem;
+    }
+    footer a { color: #60a5fa; }
+
+    /* Scroll reveal: only when JS runs and motion is welcome */
+    .js .reveal {
+      opacity: 0;
+      transform: translateY(18px);
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+    .js .reveal.visible { opacity: 1; transform: none; }
+
+    /* Copy buttons */
+    .code { position: relative; }
+    .code pre { padding-right: 3.5rem; }
+    .copy-btn {
+      position: absolute;
+      top: 0.6rem;
+      right: 0.6rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      height: 30px;
+      padding: 0 0.55rem;
+      border: 1px solid #1e3a5f;
+      border-radius: 6px;
+      background: #1e293b;
+      color: #94a3b8;
+      font: 600 0.75rem system-ui, -apple-system, sans-serif;
+      cursor: pointer;
+      opacity: 0.75;
+      transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .code:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
+    .copy-btn:hover { color: #e2e8f0; border-color: #60a5fa; }
+    .copy-btn:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+    .copy-btn.copied { color: #86efac; border-color: #22c55e; opacity: 1; }
+    .copy-btn svg, .image-pill svg {
+      width: 15px;
+      height: 15px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: none;
+    }
+    .copy-btn .label { display: none; }
+    .copy-btn.copied .label { display: inline; }
+    button.image-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s;
+    }
+    button.image-pill .ref { color: #e2e8f0; }
+    button.image-pill .ref span { color: #60a5fa; }
+    button.image-pill svg { color: #64748b; }
+    button.image-pill:hover { border-color: #60a5fa; }
+    button.image-pill:hover svg { color: #e2e8f0; }
+    button.image-pill:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+    button.image-pill.copied { border-color: #22c55e; }
+    button.image-pill.copied svg { color: #86efac; }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* Back to top */
+    .to-top {
+      position: fixed;
+      right: 1.25rem;
+      bottom: 1.25rem;
+      z-index: 90;
+      width: 44px;
+      height: 44px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 50%;
+      background: var(--dark);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(17,24,39,0.3);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(10px);
+      transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s, background 0.15s;
+    }
+    .to-top.show { opacity: 1; visibility: visible; transform: none; }
+    .to-top:hover { background: var(--accent); }
+    .to-top:focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; }
+    .to-top svg {
+      width: 20px;
+      height: 20px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .js .reveal { opacity: 1; transform: none; transition: none; }
+      .to-top { transition: none; }
+    }
+
+    @media (max-width: 900px) {
+      .shots-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      nav { padding: 0 1rem; }
+      nav .nav-links { display: none; }
+      .hero { padding: 4rem 1rem 0; }
+      .hero-actions { margin-bottom: 2.5rem; }
+      section { padding: 3.5rem 1rem; }
+      pre { padding: 1rem; font-size: 0.8rem; }
+      .code pre { padding-right: 3rem; }
+      .install-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="logo"><span class="name">spam<span>-digest</span></span><a class="ver" id="version" href="https://github.com/gioxx/spam-digest/tags" target="_blank" rel="noopener" title="Latest release">v0.7.0</a></div>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#screenshots">Screenshots</a>
+    <a href="#how-it-works">How it works</a>
+    <a href="#install">Install</a>
+    <a href="#docs">Docs</a>
+    <a href="https://github.com/gioxx/spam-digest" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>Your <span>spam folder</span>,<br>sorted and summarised</h1>
+  <p>spam-digest reads the spam folders of your IMAP mailboxes, lets AI sort each email into probably legitimate, uncertain or spam, and sends you a digest you can act on from a web page: rescue it, trust the sender, or delete it.</p>
+  <div class="hero-actions">
+    <a class="btn-primary" href="#install">Get started</a>
+    <a class="btn-ghost" href="https://kb.gioxx.org/Projects/spam-digest">Read the docs</a>
+    <a class="btn-ghost" href="https://github.com/gioxx/spam-digest" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+  <div class="hero-shot">
+    <img src="img/review-hero.webp" width="2560" height="1600" alt="spam-digest review page: two uncertain emails and two probably legitimate emails, each with Trust and move to INBOX, Move to INBOX and Delete buttons">
+  </div>
+</div>
+
+<section class="features" id="features">
+  <div class="container">
+    <div class="section-label">Features</div>
+    <h2 class="section-title">Stop losing real email to the spam folder</h2>
+    <p class="section-sub">A small, focused tool: one email a day tells you what landed in spam, and a couple of clicks fix the mistakes.</p>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg></div>
+        <h3>Daily digest email</h3>
+        <p>On your schedule, one HTML email per mailbox lists what is in the spam folder: sender, subject, date. No email when the folder is empty, unless you ask for it.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg></div>
+        <h3>AI triage (optional)</h3>
+        <p>Anthropic Claude labels each email <em>probably legitimate</em>, <em>uncertain</em> or <em>spam</em> with a short reason. Only the sender and subject are sent, never the body.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></div>
+        <h3>Rescue from the browser</h3>
+        <p>A review page linked from the digest moves an email to INBOX, optionally trusting the sender, or deletes it. Bulk buttons handle a whole section at once.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg></div>
+        <h3>Blocklist and allowlist</h3>
+        <p>Rules by sender, domain or subject keyword. Blocked emails are deleted at the next run, allowed ones moved to INBOX, and both are listed in the digest for transparency.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></div>
+        <h3>One-click cleanup</h3>
+        <p>Delete everything the AI confirmed as spam with one button, after a confirmation page, so link scanners in your mail system can't delete anything on their own.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></div>
+        <h3>Signed, rotating links</h3>
+        <p>Web actions use HMAC-signed links that rotate with every digest. They only act on the emails listed in the last run, never on anything else in the mailbox.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></div>
+        <h3>Multi-mailbox</h3>
+        <p>Watch any number of IMAP accounts from one container, each with its own spam folder and digest recipient. Common folder names are detected automatically.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></div>
+        <h3>Status dashboard</h3>
+        <p>Schedule, configuration and last-run results per mailbox, with buttons to run a digest now for one mailbox or all of them.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 7.7c0-.6-.4-1.2-.8-1.5l-6.3-3.9a1.72 1.72 0 0 0-1.7 0l-10.3 6c-.5.2-.9.8-.9 1.4v6.6c0 .5.4 1.2.8 1.5l6.3 3.9a1.72 1.72 0 0 0 1.7 0l10.3-6c.5-.3.9-1 .9-1.5Z"/><path d="M10 21.9V14L2.1 9.1"/><path d="m10 14 11.9-6.9"/><path d="M14 19.8v-8.1"/><path d="M18 17.5V9.4"/></svg></div>
+        <h3>Zero dependencies</h3>
+        <p>Pure Python standard library in a small Docker image on Docker Hub and GHCR. Digest delivery via SMTP or Resend.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="shots" id="screenshots">
+  <div class="container">
+    <div class="section-label">Screenshots</div>
+    <h2 class="section-title">From the digest to a clean folder</h2>
+    <p class="section-sub">All screenshots use placeholder data (<code>contoso.com</code>, <code>example.com</code>).</p>
+
+    <div class="shots-grid reveal">
+      <div>
+        <div class="shot shot-scroll">
+          <img src="img/digest.webp" width="1800" height="3300" loading="lazy" alt="Digest email: summary counters, auto-deleted and auto-moved sections, then probably legitimate, uncertain and confirmed spam tables with review and delete buttons">
+        </div>
+        <p class="shot-caption"><strong>Digest email.</strong> Emails grouped by AI label with the reason, what your rules already handled, and buttons to review or delete. (Scroll inside the image.)</p>
+      </div>
+      <div>
+        <div class="shot">
+          <img src="img/review.webp" width="2560" height="1980" loading="lazy" alt="Review page with uncertain and probably legitimate sections and bulk buttons">
+        </div>
+        <p class="shot-caption"><strong>Review page.</strong> Trust and move to INBOX, move without trusting, or delete, one email at a time or a whole section.</p>
+      </div>
+    </div>
+
+    <div class="shots-grid reveal">
+      <div>
+        <div class="shot">
+          <img src="img/dashboard.webp" width="2560" height="2180" loading="lazy" alt="Status dashboard with schedule, configuration, two mailboxes and last-run results">
+        </div>
+        <p class="shot-caption"><strong>Dashboard.</strong> Schedule, configuration and the last run of every mailbox, with Run buttons.</p>
+      </div>
+      <div>
+        <div class="shot">
+          <img src="img/filters.webp" width="2560" height="2400" loading="lazy" alt="Filters page with blocklist and allowlist rules and forms to add new ones">
+        </div>
+        <p class="shot-caption"><strong>Filters page.</strong> Blocklist and allowlist rules, with a preview of matching emails before you save.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="how" id="how-it-works">
+  <div class="container">
+    <div class="section-label">How it works</div>
+    <h2 class="section-title">Every run, for every mailbox</h2>
+    <p class="section-sub">At the scheduled time (or when you click <em>Run</em> on the dashboard) spam-digest runs these steps.</p>
+    <div class="steps">
+      <div class="step reveal">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h3>Read the spam folder</h3>
+          <p>It connects over IMAP, opens the spam folder (trying common names if the configured one is missing) and reads only the headers of the newest emails.</p>
+        </div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h3>Apply your rules</h3>
+          <p>Emails matching a blocklist rule are deleted, and emails from trusted senders or matching an allowlist rule are moved to INBOX, in the same IMAP session.</p>
+        </div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h3>Classify with AI</h3>
+          <p>If enabled, sender and subject of the remaining emails go to Claude, which labels each one probably legitimate, uncertain or spam.</p>
+        </div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h3>Send the digest</h3>
+          <p>The digest is emailed via SMTP or Resend, with freshly signed links to the review page, the filters page and the delete button. Older links stop working.</p>
+        </div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <h3>Act from the web page</h3>
+          <p>From the links you rescue, trust or delete. Every action touches only the emails listed in that digest.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="install" id="install">
+  <div class="container">
+    <div class="section-label">Install</div>
+    <h2 class="section-title">Up and running in minutes</h2>
+    <p class="section-sub">All you need is Docker with Compose. Official images are published for every release:</p>
+
+    <div class="images">
+      <button type="button" class="image-pill" data-copy="docker.io/gfsolone/spam-digest" title="Copy image name" aria-label="Copy docker.io/gfsolone/spam-digest"><span class="ref"><span>docker.io/</span>gfsolone/spam-digest</span></button>
+      <button type="button" class="image-pill" data-copy="ghcr.io/gioxx/spam-digest" title="Copy image name" aria-label="Copy ghcr.io/gioxx/spam-digest"><span class="ref"><span>ghcr.io/</span>gioxx/spam-digest</span></button>
+      <div class="image-pill">tags: <span>latest</span> · <span>X.Y.Z</span> · <span>dev</span></div>
+    </div>
+
+    <div class="install-grid reveal">
+      <div>
+        <h3>Docker Compose</h3>
+<pre><span class="comment"># Get the compose file</span>
+mkdir spam-digest &amp;&amp; cd spam-digest
+curl -LO https://raw.githubusercontent.com/gioxx/spam-digest/main/docker-compose.yml
+
+<span class="comment"># Set your IMAP, SMTP and (optional) AI settings</span>
+nano docker-compose.yml
+
+<span class="comment"># Start</span>
+docker compose up -d</pre>
+        <p class="note">The dashboard is at <strong>http://localhost:8080</strong>. Set <code>TZ</code> to your timezone: the schedule uses it.</p>
+      </div>
+      <div>
+        <h3>Minimal settings</h3>
+<pre><span class="key">environment:</span>
+  <span class="key">IMAP_SERVER:</span> <span class="str">imap.example.com</span>
+  <span class="key">EMAIL_USER:</span> <span class="str">you@example.com</span>
+  <span class="key">EMAIL_PASS:</span> <span class="str">your-imap-password</span>
+  <span class="key">SMTP_HOST:</span> <span class="str">smtp.example.com</span>
+  <span class="key">SMTP_USER:</span> <span class="str">you@example.com</span>
+  <span class="key">SMTP_PASS:</span> <span class="str">your-smtp-password</span>
+  <span class="comment"># Optional: AI triage and web actions</span>
+  <span class="key">AI_PROVIDER:</span> <span class="str">anthropic</span>
+  <span class="key">AI_API_KEY:</span> <span class="str">sk-ant-...</span>
+  <span class="key">WEB_BASE_URL:</span> <span class="str">https://spamdigest.example.com</span></pre>
+        <p class="note"><code>WEB_BASE_URL</code> is the public address of the dashboard: without it the digest has no review, filters or delete links.</p>
+        <h3 style="margin-top:1.75rem">Update</h3>
+<pre>docker compose pull &amp;&amp; docker compose up -d</pre>
+        <p class="note">Pin a release (e.g. <code>gfsolone/spam-digest:0.7.0</code>) instead of <code>latest</code> to upgrade on your own schedule.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="docs" id="docs">
+  <div class="container">
+    <div class="section-label">Documentation</div>
+    <h2 class="section-title">Configure, run, integrate</h2>
+    <p class="section-sub">The full documentation lives on <a href="https://kb.gioxx.org/Projects/spam-digest">kb.gioxx.org</a>, next to <a href="https://kb.gioxx.org/Projects/clean-mail-automation">Clean Mail Automation</a>, a related tool that deletes old emails from IMAP folders.</p>
+
+    <div class="docs-grid">
+      <a class="doc-card reveal" href="https://kb.gioxx.org/Projects/spam-digest#quick-start">
+        <h3>Quick start</h3>
+        <p>Docker Compose for one mailbox, then multi-mailbox with <code>MAILBOX_CONFIGS</code>.</p>
+      </a>
+      <a class="doc-card reveal" href="https://kb.gioxx.org/Projects/spam-digest#environment-variables">
+        <h3>Environment variables</h3>
+        <p>IMAP, email delivery (SMTP or Resend), AI, schedule and web settings.</p>
+      </a>
+      <a class="doc-card reveal" href="https://kb.gioxx.org/Projects/spam-digest#ai-classification">
+        <h3>AI classification</h3>
+        <p>What is sent to Claude, the three labels, model choice and cost.</p>
+      </a>
+      <a class="doc-card reveal" href="https://kb.gioxx.org/Projects/spam-digest#web-pages-and-links">
+        <h3>Web pages and links</h3>
+        <p>Review, filters and delete links: how they are signed, rotated and limited.</p>
+      </a>
+      <a class="doc-card reveal" href="https://kb.gioxx.org/Projects/spam-digest#cli">
+        <h3>CLI</h3>
+        <p><code>--dry-run</code>, <code>--force-send</code>, <code>--only</code>, and running outside Docker.</p>
+      </a>
+      <a class="doc-card reveal" href="https://kb.gioxx.org/Projects/spam-digest#troubleshooting">
+        <h3>Troubleshooting</h3>
+        <p>Folder not found, SSL errors, links that stop working, emails not sent.</p>
+      </a>
+    </div>
+    <div class="callout">The dashboard has no built-in login. Keep port 8080 on a trusted network, or put it behind a reverse proxy with authentication. The review, filters and delete pages are protected by their signed links.</div>
+  </div>
+</section>
+
+<footer>
+  <p>spam-digest is open source software released under the MIT license.</p>
+  <p style="margin-top:0.5rem">
+    <a href="https://github.com/gioxx/spam-digest" target="_blank" rel="noopener">GitHub</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/gioxx/spam-digest/tags" target="_blank" rel="noopener">Releases</a>
+    &nbsp;·&nbsp;
+    <a href="https://hub.docker.com/r/gfsolone/spam-digest" target="_blank" rel="noopener">Docker Hub</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/gioxx/spam-digest/issues" target="_blank" rel="noopener">Issues</a>
+    &nbsp;·&nbsp;
+    <a href="https://kb.gioxx.org/Projects/spam-digest">Docs</a>
+    &nbsp;·&nbsp;
+    <a href="third-party-notices.txt">Third-party notices</a>
+  </p>
+</footer>
+
+<div id="copy-status" class="sr-only" role="status" aria-live="polite"></div>
+
+<button class="to-top" type="button" aria-label="Back to top" title="Back to top">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+</button>
+
+<script>
+  (function () {
+    var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.documentElement.classList.add("js");
+
+    // Reveal cards, steps and screenshots as they scroll into view.
+    var items = document.querySelectorAll(".reveal");
+    if (reduce || !("IntersectionObserver" in window)) {
+      items.forEach(function (el) { el.classList.add("visible"); });
+    } else {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { e.target.classList.add("visible"); io.unobserve(e.target); }
+        });
+      }, { rootMargin: "0px 0px -8% 0px" });
+      items.forEach(function (el) {
+        el.style.transitionDelay = (Array.prototype.indexOf.call(el.parentNode.children, el) % 3) * 80 + "ms";
+        io.observe(el);
+      });
+    }
+
+    // Highlight the menu item of the section in view.
+    var links = document.querySelectorAll('nav .nav-links a[href^="#"]');
+    var byId = {};
+    links.forEach(function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+    var sections = Object.keys(byId).map(function (id) { return document.getElementById(id); }).filter(Boolean);
+    var toTop = document.querySelector(".to-top");
+    function onScroll() {
+      var y = window.scrollY + 56 + 1;
+      var current = null;
+      sections.forEach(function (sec) { if (sec.offsetTop <= y) current = sec.id; });
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        current = sections[sections.length - 1].id;
+      }
+      links.forEach(function (a) { a.classList.toggle("active", byId[current] === a); });
+      toTop.classList.toggle("show", window.scrollY > 600);
+    }
+    toTop.addEventListener("click", function () {
+      window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+    });
+    window.addEventListener("scroll", onScroll, { passive: true });
+
+    // Latest version badge: newest tag from GitHub, static fallback in the HTML.
+    try {
+      fetch("https://api.github.com/repos/gioxx/spam-digest/tags?per_page=1")
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .then(function (tags) {
+          if (tags && tags[0] && /^\d+\.\d+(\.\d+)?$/.test(tags[0].name)) {
+            document.getElementById("version").textContent = "v" + tags[0].name;
+          }
+        })
+        .catch(function () {});
+    } catch (e) {}
+
+    // Copy to clipboard: every code block, plus the image names.
+    var ICON_COPY = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+    var ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+
+    function copyText(text) {
+      if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+      return new Promise(function (resolve, reject) {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(ta);
+        ok ? resolve() : reject();
+      });
+    }
+
+    // One live region for every copy button, so screen readers hear the
+    // outcome whichever button was used.
+    var status = document.getElementById("copy-status");
+    function announce(msg) {
+      status.textContent = "";
+      setTimeout(function () { status.textContent = msg; }, 50);
+    }
+
+    function flash(btn, iconHolder) {
+      clearTimeout(btn._t);
+      btn.classList.add("copied");
+      iconHolder.innerHTML = ICON_CHECK;
+      btn._t = setTimeout(function () {
+        btn.classList.remove("copied");
+        iconHolder.innerHTML = ICON_COPY;
+      }, 1600);
+    }
+
+    document.querySelectorAll("pre").forEach(function (pre) {
+      var wrap = document.createElement("div");
+      wrap.className = "code";
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "copy-btn";
+      btn.title = "Copy to clipboard";
+      btn.setAttribute("aria-label", "Copy code to clipboard");
+      btn.innerHTML = '<span class="ico">' + ICON_COPY + '</span><span class="label" aria-hidden="true">Copied</span>';
+      btn.addEventListener("click", function () {
+        copyText(pre.innerText.replace(/\n$/, "")).then(function () {
+          flash(btn, btn.querySelector(".ico"));
+          announce("Code copied to clipboard");
+        }, function () { announce("Copy failed: select the text and copy it manually"); });
+      });
+      wrap.appendChild(btn);
+    });
+
+    document.querySelectorAll("button.image-pill[data-copy]").forEach(function (btn) {
+      var ico = document.createElement("span");
+      ico.className = "ico";
+      ico.style.display = "inline-flex";
+      ico.innerHTML = ICON_COPY;
+      btn.appendChild(ico);
+      btn.addEventListener("click", function () {
+        var ref = btn.getAttribute("data-copy");
+        copyText(ref).then(function () {
+          flash(btn, ico);
+          announce(ref + " copied to clipboard");
+        }, function () { announce("Copy failed: select the text and copy it manually"); });
+      });
+    });
+    onScroll();
+  })();
+</script>
+
+</body>
+</html>

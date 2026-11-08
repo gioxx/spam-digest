@@ -147,8 +147,11 @@ def _get_schedule():
     }
     try:
         h, m = int(hour_), int(min_)
-        day_label = day_names.get(day_, f"day {day_}")
-        description = f"Every {day_label} at {h:02d}:{m:02d}"
+        if day_ == "*":
+            description = f"Every day at {h:02d}:{m:02d}"
+        else:
+            day_label = day_names.get(day_, f"day {day_}")
+            description = f"Every {day_label} at {h:02d}:{m:02d}"
     except ValueError:
         description = cron_expr
     return cron_expr, description
@@ -1821,7 +1824,7 @@ def _render_html(notice=None, notice_kind="ok"):
         f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th class='hide-mobile'>IMAP server</th><th class='hide-mobile'>Port</th><th class='hide-mobile'>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th>Management</th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div>"
         "<p style='color:var(--muted);font-size:.72rem;margin-top:.75rem;padding:0 .25rem'>"
-        "A fresh <strong>filters</strong> link (and a <strong>review</strong> link when uncertain items are present) is shipped automatically inside every digest email, so you can add a rule the moment you spot a sender worth blocking. "
+        "A fresh <strong>filters</strong> link (and a <strong>review</strong> link when uncertain or probably legitimate items are present) is shipped automatically inside every digest email, so you can add a rule the moment you spot a sender worth blocking. "
         "\u2699\ufe0e <strong>Filters</strong> here is only needed when you want a new link out-of-band \u2014 it rotates the link and emails the new URL to <em>digest_to</em>. "
         "The old link stops working immediately. Links are never shown on this dashboard.</p>"
         "</section>"
