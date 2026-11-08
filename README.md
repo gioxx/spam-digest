@@ -71,7 +71,7 @@ not at container start unless `RUN_ON_START=true`. The dashboard is at `http://l
 A complete [`docker-compose.yml`](docker-compose.yml) and an [`.env.example`](.env.example) are in this repository.
 
 > [!WARNING]
-> The dashboard has no login. Keep port 8080 on a trusted network or behind a reverse proxy with authentication.
+> The dashboard has no login by default. Set `DASHBOARD_PASS` (and optionally `DASHBOARD_USER`, default `admin`) to protect it with HTTP Basic auth, and keep port 8080 on a trusted network or behind an HTTPS reverse proxy.
 
 ---
 

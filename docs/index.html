@@ -702,7 +702,7 @@ docker compose up -d</pre>
         <p>Folder not found, SSL errors, links that stop working, emails not sent.</p>
       </a>
     </div>
-    <div class="callout">The dashboard has no built-in login. Keep port 8080 on a trusted network, or put it behind a reverse proxy with authentication. The review, filters and delete pages are protected by their signed links.</div>
+    <div class="callout">The dashboard has no login by default: set <code>DASHBOARD_PASS</code> (and optionally <code>DASHBOARD_USER</code>) to protect it with HTTP Basic auth, and serve it over HTTPS or on a trusted network. The review, filters and delete pages are protected by their signed links.</div>
   </div>
 </section>
 
