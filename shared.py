@@ -20,7 +20,7 @@ import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 
 DATA_DIR = "/data"
 STATE_FILE = os.path.join(DATA_DIR, "spam_digest_last_run.json")
