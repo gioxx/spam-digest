@@ -98,6 +98,14 @@ docker build -t spam-digest .
 docker run -d --env-file .env -p 8080:8080 -v spam_digest_data:/data spam-digest
 ```
 
+Run the tests (standard library only, no dependencies; they never touch `/data`):
+
+```bash
+python3 -m unittest discover -s tests -t tests
+```
+
+CI runs them inside the built image on every pull request, together with a container smoke test.
+
 The project website lives in [`docs/`](docs/) and is published with GitHub Pages.
 
 ---

@@ -159,44 +159,8 @@ def _log_action(ip, action, email=None, result=None, detail=None):
 
 
 def _get_mailbox_configs():
-    raw = os.getenv("MAILBOX_CONFIGS")
-    if raw:
-        try:
-            configs = json.loads(raw)
-            if isinstance(configs, list) and configs:
-                result = []
-                for cfg in configs:
-                    if not isinstance(cfg, dict):
-                        continue
-                    email_user = cfg.get("email_user") or cfg.get("EMAIL_USER") or ""
-                    email_address = cfg.get("email_address") or cfg.get("EMAIL_ADDRESS") or email_user
-                    result.append({
-                        "email_address": email_address,
-                        "email_user": email_user,
-                        "email_pass": cfg.get("email_pass") or cfg.get("EMAIL_PASS") or "",
-                        "imap_use_ssl": cfg.get("imap_use_ssl") if cfg.get("imap_use_ssl") is not None else cfg.get("IMAP_USE_SSL"),
-                        "digest_to": (cfg.get("digest_to") or "").strip(),
-                        "imap_server": cfg.get("imap_server") or cfg.get("IMAP_SERVER") or "",
-                        "imap_port": cfg.get("imap_port") or cfg.get("IMAP_PORT") or 993,
-                        "spam_folder": cfg.get("spam_folder") or cfg.get("SPAM_FOLDER") or os.getenv("SPAM_FOLDER", "Junk"),
-                        "max_emails": cfg.get("max_emails") or cfg.get("MAX_EMAILS") or os.getenv("MAX_EMAILS", 100),
-                    })
-                if result:
-                    return result
-        except Exception:
-            pass
-    email_user = os.getenv("EMAIL_USER", "")
-    return [{
-        "email_address": os.getenv("EMAIL_ADDRESS") or email_user,
-        "email_user": email_user,
-        "email_pass": os.getenv("EMAIL_PASS", ""),
-        "imap_use_ssl": os.getenv("IMAP_USE_SSL"),
-        "digest_to": os.getenv("DIGEST_TO", "").strip(),
-        "imap_server": os.getenv("IMAP_SERVER", ""),
-        "imap_port": os.getenv("IMAP_PORT", 993),
-        "spam_folder": os.getenv("SPAM_FOLDER", "Junk"),
-        "max_emails": os.getenv("MAX_EMAILS", 100),
-    }]
+    """Same parser as the digest, so the dashboard shows what the digest uses."""
+    return shared.load_mailbox_configs()
 
 
 def _get_schedule():
@@ -663,21 +627,8 @@ def _do_bulk_review_action(email, action):
     return True, f"Deleted {n} email(s)."
 
 
-_BTN_STYLES = {
-    "ok": (
-        "background:var(--ok-dim);color:var(--ok);border:1px solid var(--ok-border);"
-    ),
-    "err": (
-        "background:var(--err-dim);color:var(--err);border:1px solid var(--err-border);"
-    ),
-    "neutral": (
-        "background:var(--surface);color:var(--text);border:1px solid var(--border);"
-    ),
-}
-
-
 def _review_form(form_action, action, label, confirm, confirm_title, confirm_kind,
-                 style, hidden=None, title=None, size="0.75rem", pad="0.3rem 0.7rem"):
+                 style, hidden=None, title=None, size="sm"):
     """Render one POST form with a single submit button for the review page."""
     hidden_html = "".join(
         f"<input type='hidden' name='{escape(k)}' value='{escape(v)}'>"
@@ -685,14 +636,12 @@ def _review_form(form_action, action, label, confirm, confirm_title, confirm_kin
     )
     title_attr = f" title='{escape(title)}'" if title else ""
     return (
-        f"<form method='POST' action='{form_action}' style='display:inline' "
+        f"<form method='POST' action='{form_action}' class='inline-form' "
         f"data-confirm='{escape(confirm)}' "
         f"data-confirm-title='{escape(confirm_title)}' data-confirm-kind='{confirm_kind}'>"
         f"<input type='hidden' name='action' value='{action}'>"
         f"{hidden_html}"
-        f"<button type='submit' style='{_BTN_STYLES[style]}padding:{pad};"
-        f"border-radius:0.375rem;font-size:{size};cursor:pointer;font-weight:500;"
-        f"white-space:nowrap'{title_attr}>{label}</button></form>"
+        f"<button type='submit' class='btn btn-{size} btn-{style}'{title_attr}>{label}</button></form>"
     )
 
 
@@ -754,23 +703,12 @@ def _render_review_table(form_action, email_list, kind):
             f"{row_forms}</td>"
             "</tr>"
         )
-    th = (
-        "<th style='text-align:{align};padding:0.5rem 0.75rem;color:var(--muted);"
-        "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>{label}</th>"
-    )
     return (
-        "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
-        "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;"
-        "table-layout:fixed'>"
+        "<table class='data-table fixed'>"
         "<colgroup>"
         "<col style='width:11%'><col style='width:22%'><col style='width:35%'><col style='width:32%'>"
         "</colgroup>"
-        "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
-        + th.format(align="left", label="Date")
-        + th.format(align="left", label="From")
-        + th.format(align="left", label="Subject / reason")
-        + th.format(align="right", label="Action")
-        + "</tr></thead>"
+        "<thead><tr><th>Date</th><th>From</th><th>Subject / reason</th><th class='r'>Action</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
@@ -789,7 +727,7 @@ def _render_review_section(form_action, email_list, kind):
             form_action, "delete_all_uncertain", f"&#10005; Delete all ({n})",
             f"Permanently delete all {n} uncertain emails? This cannot be undone.",
             "Delete all uncertain emails", "danger", "err",
-            size="0.8125rem", pad="0.4rem 0.9rem",
+            size="md",
         ) if n > 1 else ""
         empty_msg = "No uncertain emails pending review."
     else:
@@ -804,7 +742,7 @@ def _render_review_section(form_action, email_list, kind):
             f"Move all {n} probably legitimate emails to INBOX? "
             "Senders are not added to the allowlist.",
             "Move all to INBOX", "primary", "ok",
-            size="0.8125rem", pad="0.4rem 0.9rem",
+            size="md",
         ) if n > 1 else ""
         empty_msg = "No probably legitimate emails pending review."
 
@@ -812,9 +750,7 @@ def _render_review_section(form_action, email_list, kind):
         inner = _render_review_table(form_action, email_list, kind)
     else:
         inner = (
-            "<div style='padding:1rem 1.25rem;background:var(--surface2);"
-            "border:1px solid var(--border);border-radius:var(--radius);color:var(--muted);"
-            f"font-size:0.875rem'>{empty_msg}</div>"
+            f"<div class='panel empty-box'>{empty_msg}</div>"
         )
     bulk_html = (
         f"<div style='display:flex;justify-content:flex-end;margin-bottom:0.75rem'>{bulk}</div>"
@@ -822,8 +758,8 @@ def _render_review_section(form_action, email_list, kind):
     )
     return (
         "<section style='margin-bottom:2rem'>"
-        f"<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.5rem'>{title}</h2>"
-        f"<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:1rem'>{help_html}</p>"
+        f"<h2 class='section-h'>{title}</h2>"
+        f"<p class='section-help'>{help_html}</p>"
         f"{bulk_html}{inner}"
         "</section>"
     )
@@ -849,9 +785,7 @@ def _render_review_page(email, token, review_lists, banner=None, banner_kind="ok
 
     if not uncertain_list and not safe_list:
         sections = (
-            "<div style='padding:1.25rem 1.5rem;background:var(--surface2);"
-            "border:1px solid var(--border);border-radius:var(--radius);color:var(--muted);"
-            "font-size:0.875rem'>No emails pending review. "
+            "<div class='panel empty-box' style='padding:1.25rem 1.5rem'>No emails pending review. "
             "Either the last digest had none, or all have already been reviewed.</div>"
         )
     else:
@@ -863,7 +797,7 @@ def _render_review_page(email, token, review_lists, banner=None, banner_kind="ok
             sections += _render_review_section(form_action, safe_list, "safe")
 
     body_html = (
-        "<main style='max-width:1024px;margin:2rem auto;padding:0 1.5rem'>"
+        "<main class='page-wide'>"
         f"{banner_html}"
         f"{sections}"
         "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
@@ -962,27 +896,17 @@ def _render_filters_page(email, token, rules, allowlist_rules=None, preview=None
                 f"<td style='padding:0.5rem 0.75rem;font-family:var(--mono);font-size:0.8125rem'>{rvalue}</td>"
                 f"<td style='padding:0.5rem 0.75rem;color:var(--muted);font-size:0.75rem'>{added}</td>"
                 f"<td style='padding:0.5rem 0.75rem;text-align:right'>"
-                f"<form method='POST' action='{form_action}' style='display:inline' "
+                f"<form method='POST' action='{form_action}' class='inline-form' "
                 f"data-confirm='Remove this filter rule?' "
                 f"data-confirm-title='Remove rule' data-confirm-kind='danger'>"
                 f"<input type='hidden' name='action' value='remove_rule'>"
                 f"<input type='hidden' name='rule_id' value='{rid}'>"
-                f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
-                f"border:1px solid var(--err-border);padding:0.25rem 0.65rem;border-radius:0.375rem;"
-                f"font-size:0.75rem;cursor:pointer'>Remove</button>"
+                f"<button type='submit' class='btn btn-sm btn-err' style='padding:0.25rem 0.65rem;font-weight:400'>Remove</button>"
                 f"</form></td></tr>"
             )
         rules_table = (
-            "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
-            "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden'>"
-            "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Type</th>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Value</th>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Added</th>"
-            "<th></th></tr></thead>"
+            "<table class='data-table'>"
+            "<thead><tr><th>Type</th><th>Value</th><th>Added</th><th></th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
         )
     else:
@@ -1129,27 +1053,17 @@ def _render_filters_page(email, token, rules, allowlist_rules=None, preview=None
                 f"<td style='padding:0.5rem 0.75rem;font-family:var(--mono);font-size:0.8125rem'>{rvalue}</td>"
                 f"<td style='padding:0.5rem 0.75rem;color:var(--muted);font-size:0.75rem'>{added}</td>"
                 f"<td style='padding:0.5rem 0.75rem;text-align:right'>"
-                f"<form method='POST' action='{form_action}' style='display:inline' "
+                f"<form method='POST' action='{form_action}' class='inline-form' "
                 f"data-confirm='Remove this allowlist rule?' "
                 f"data-confirm-title='Remove rule' data-confirm-kind='danger'>"
                 f"<input type='hidden' name='action' value='remove_allowlist_rule'>"
                 f"<input type='hidden' name='rule_id' value='{rid}'>"
-                f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
-                f"border:1px solid var(--err-border);padding:0.25rem 0.65rem;border-radius:0.375rem;"
-                f"font-size:0.75rem;cursor:pointer'>Remove</button>"
+                f"<button type='submit' class='btn btn-sm btn-err' style='padding:0.25rem 0.65rem;font-weight:400'>Remove</button>"
                 f"</form></td></tr>"
             )
         al_table = (
-            "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
-            "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden'>"
-            "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Type</th>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Value</th>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Added</th>"
-            "<th></th></tr></thead>"
+            "<table class='data-table'>"
+            "<thead><tr><th>Type</th><th>Value</th><th>Added</th><th></th></tr></thead>"
             f"<tbody>{al_rows}</tbody></table>"
         )
     else:
@@ -1178,7 +1092,7 @@ def _render_filters_page(email, token, rules, allowlist_rules=None, preview=None
     )
 
     body_html = (
-        "<main style='max-width:960px;margin:2rem auto;padding:0 1.5rem'>"
+        "<main class='page-wide' style='max-width:960px'>"
         f"{banner_html}"
         "<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.75rem'>"
         "\U0001f6ab Blocklist \u2014 auto-delete</h2>"
@@ -1535,6 +1449,30 @@ tbody td { padding: 0.65rem 0.85rem; border-bottom: 1px solid var(--border); ver
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--surface2); }
 .cell-err { color: var(--err); font-size: 0.8rem; font-family: var(--mono); }
+/* Shared components of the review / filters / result pages */
+.page-wide { max-width: 1024px; margin: 2rem auto; padding: 0 1.5rem; }
+.page-narrow { max-width: 560px; margin: 4rem auto; padding: 0 1.5rem; }
+.panel { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); }
+.empty-box { padding: 1rem 1.25rem; color: var(--muted); font-size: 0.875rem; }
+.result-card { padding: 2rem 2.25rem; text-align: center; }
+.result-card h2 { margin: 0 0 .75rem; font-size: 1.25rem; font-weight: 600; }
+.result-card p { color: var(--muted); margin: .5rem 0 1.5rem; font-size: 0.9rem; }
+.result-card .back { color: var(--accent); text-decoration: none; font-size: 0.875rem; }
+.section-h { font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; }
+.section-help { color: var(--muted); font-size: 0.8125rem; margin-bottom: 1rem; }
+.inline-form { display: inline; }
+.btn { border-radius: 0.375rem; cursor: pointer; font-weight: 500; white-space: nowrap; }
+.btn-sm { padding: 0.3rem 0.7rem; font-size: 0.75rem; }
+.btn-md { padding: 0.4rem 0.9rem; font-size: 0.8125rem; }
+.btn-lg { padding: 0.55rem 1.2rem; font-size: 0.875rem; font-weight: 600; }
+.btn-ok { background: var(--ok-dim); color: var(--ok); border: 1px solid var(--ok-border); }
+.btn-err { background: var(--err-dim); color: var(--err); border: 1px solid var(--err-border); }
+.btn-neutral { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.data-table { width: 100%; border-collapse: collapse; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.data-table.fixed { table-layout: fixed; }
+.data-table thead tr { background: var(--surface); border-bottom: 1px solid var(--border); }
+.data-table th { text-align: left; padding: 0.5rem 0.75rem; color: var(--muted); font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: none; }
+.data-table th.r { text-align: right; }
 .cell-muted { color: var(--muted); }
 .empty { color: var(--muted); font-size: 0.875rem; padding: 0.5rem 0; }
 .btn-action { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.9rem; border-radius: 9999px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-family: inherit; font-size: 0.75rem; font-weight: 500; line-height: 1.4; cursor: pointer; text-decoration: none; transition: border-color 0.15s, color 0.15s, background 0.15s; white-space: nowrap; box-sizing: border-box; }
@@ -1697,14 +1635,10 @@ def _render_result_page(page_title, subtitle_html, status_word, status_color, me
     so every tokenised endpoint shares the dashboard chrome.
     """
     body_html = (
-        "<main style='max-width:560px;margin:4rem auto;padding:0 1.5rem'>"
-        "<div style='background:var(--surface2);border:1px solid var(--border);"
-        "border-radius:var(--radius);padding:2rem 2.25rem;text-align:center'>"
-        f"<h2 style='margin:0 0 .75rem;color:{status_color};font-size:1.25rem;font-weight:600'>"
-        f"{escape(status_word)}</h2>"
-        f"<p style='color:var(--muted);margin:.5rem 0 1.5rem;font-size:0.9rem'>{escape(message)}</p>"
-        f"<a href='{escape(back_href)}' style='color:var(--accent);text-decoration:none;font-size:0.875rem'>"
-        f"{escape(back_label)}</a>"
+        "<main class='page-narrow'><div class='panel result-card'>"
+        f"<h2 style='color:{status_color}'>{escape(status_word)}</h2>"
+        f"<p>{escape(message)}</p>"
+        f"<a class='back' href='{escape(back_href)}'>{escape(back_label)}</a>"
         "</div></main>"
     )
     return _page_shell(
@@ -1717,22 +1651,15 @@ def _render_result_page(page_title, subtitle_html, status_word, status_color, me
 def _render_delete_confirm_page(email, ts, token, count):
     """Confirmation step for /action/delete-spam (the button POSTs)."""
     body_html = (
-        "<main style='max-width:560px;margin:4rem auto;padding:0 1.5rem'>"
-        "<div style='background:var(--surface2);border:1px solid var(--border);"
-        "border-radius:var(--radius);padding:2rem 2.25rem;text-align:center'>"
-        "<h2 style='margin:0 0 .75rem;color:var(--err);font-size:1.25rem;font-weight:600'>"
-        "Delete confirmed spam</h2>"
-        f"<p style='color:var(--muted);margin:.5rem 0 1.5rem;font-size:0.9rem'>"
-        f"Permanently delete {count} email(s) classified as spam in the digest of "
+        "<main class='page-narrow'><div class='panel result-card'>"
+        "<h2 style='color:var(--err)'>Delete confirmed spam</h2>"
+        f"<p>Permanently delete {count} email(s) classified as spam in the digest of "
         f"{escape(ts)} for {escape(email)}? This cannot be undone.</p>"
-        "<form method='POST' action='/action/delete-spam' style='display:inline'>"
+        "<form method='POST' action='/action/delete-spam' class='inline-form'>"
         f"<input type='hidden' name='email' value='{escape(email)}'>"
         f"<input type='hidden' name='ts' value='{escape(ts)}'>"
         f"<input type='hidden' name='token' value='{escape(token)}'>"
-        "<button type='submit' style='background:var(--err-dim);color:var(--err);"
-        "border:1px solid var(--err-border);padding:0.55rem 1.2rem;border-radius:0.375rem;"
-        "font-size:0.875rem;cursor:pointer;font-weight:600'>"
-        f"&#10005; Delete {count} email(s)</button></form>"
+        f"<button type='submit' class='btn btn-lg btn-err'>&#10005; Delete {count} email(s)</button></form>"
         "</div></main>"
     )
     return _page_shell(
@@ -2115,248 +2042,233 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
         return True
 
+    # --- small response helpers -------------------------------------------
+
+    def _read_form(self, max_len):
+        """Parse an urlencoded POST body. Returns the form dict, or None after
+        answering 400/413 (bad or oversized Content-Length)."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            length = -1
+        if length < 0:
+            self._send_status(400)
+            return None
+        if length > max_len:
+            self._send_status(413)
+            return None
+        raw = self.rfile.read(length) if length else b""
+        return urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"))
+
+    def _send_status(self, status, headers=None):
+        self.send_response(status)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_html(self, body, status=200, headers=None):
+        data = body if isinstance(body, bytes) else body.encode("utf-8")
+        self.send_response(status)
+        sent_type = False
+        for k, v in (headers or {}).items():
+            sent_type = sent_type or k.lower() == "content-type"
+            self.send_header(_safe_header(k), _safe_header(v))
+        if not sent_type:
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _redirect_home(self, params):
+        self._send_status(303, {"Location": _safe_header("/?" + urllib.parse.urlencode(params))})
+
+    @staticmethod
+    def _first(params, key, strip=False):
+        value = (params.get(key, [""]) or [""])[0]
+        return value.strip() if strip else value
+
+    # --- dispatch -----------------------------------------------------------
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        if self._require_dashboard_auth(parsed.path):
+        path = parsed.path
+        if self._require_dashboard_auth(path):
             return
-        if parsed.path.startswith(_TOKENIZED_PATHS) and self._enforce_rate_limit(
-            f"GET {parsed.path}"
-        ):
+        if path in _TOKENIZED_PATHS and self._enforce_rate_limit(f"GET {path}"):
             return
-        if parsed.path in ("/", "/status", "/index.html"):
-            qs = urllib.parse.parse_qs(parsed.query)
-            code = (qs.get("n", [""]) or [""])[0]
-            notice_text, notice_kind = _resolve_notice(code, qs)
-            body = _render_html(
-                notice=notice_text,
-                notice_kind=notice_kind,
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path in _DASHBOARD_POST_PATHS:
-            # State-changing dashboard actions are POST-only (see do_POST).
-            self.send_response(405)
-            self.send_header("Allow", "POST")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-        elif self.path.startswith("/filters") or self.path.startswith("/review"):
-            parsed = urllib.parse.urlparse(self.path)
-            params = urllib.parse.parse_qs(parsed.query)
-            email = params.get("email", [""])[0]
-            token = params.get("token", [""])[0]
-            if parsed.path == "/filters":
-                status, body, headers = _handle_filters_request(email, token, form=None)
-            else:
-                status, body, headers = _handle_review_request(email, token, form=None)
-            _log_action(
-                self._client_ip(), f"GET {parsed.path}", email=email,
-                result=str(status),
-            )
-            self.send_response(status)
-            for k, v in headers.items():
-                self.send_header(_safe_header(k), _safe_header(v))
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path.startswith("/action/delete-spam"):
-            qs = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(qs)
-            email = params.get("email", [""])[0]
-            ts = params.get("ts", [""])[0]
-            token = params.get("token", [""])[0]
-            # GET never deletes: mail scanners and link previewers follow
-            # links in emails. Show a confirmation page whose button POSTs.
-            if email and ts and token and _EMAIL_RE.match(email):
-                ok, msg, uids, _ = _check_delete_link(email, ts, token)
-            else:
-                ok, msg, uids = False, "Missing or invalid parameters.", []
-            _log_action(
-                self._client_ip(), "GET delete-spam", email=email,
-                result="ok" if ok else "error", detail=msg,
-            )
-            if ok and uids:
-                body = _render_delete_confirm_page(email, ts, token, len(uids)).encode("utf-8")
-            else:
-                body = _render_result_page(
-                    page_title="Delete spam \u2014 Spam Digest",
-                    subtitle_html="Delete confirmed spam",
-                    status_word="Nothing to do" if ok else "Error",
-                    status_color="var(--muted)" if ok else "var(--err)",
-                    message=msg,
-                ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
+        if path in _DASHBOARD_POST_PATHS:
+            # State-changing dashboard actions are POST-only.
+            self._send_status(405, {"Allow": "POST"})
+            return
+        handler = self._GET_ROUTES.get(path)
+        if handler is None:
+            self._send_status(404)
+            return
+        handler(self, urllib.parse.parse_qs(parsed.query))
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if self._require_dashboard_auth(path):
             return
-        if path.startswith(_TOKENIZED_PATHS) and self._enforce_rate_limit(f"POST {path}"):
+        if path in _TOKENIZED_PATHS and self._enforce_rate_limit(f"POST {path}"):
             return
         if path in _DASHBOARD_POST_PATHS and self._reject_cross_site():
             return
-        if path in ("/action/run-now", "/action/dry-run", "/action/run-mailbox"):
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length < 0 or length > 4096:
-                self.send_response(413)
-                self.end_headers()
-                return
-            raw_body = self.rfile.read(length) if length else b""
-            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
-            if path == "/action/run-now":
-                ok, out = _run_digest("force_send")
-                print(f"[action/run-now] ok={ok} |\n{out}", flush=True)
-                _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out)
-                params_out = [("n", "run_all_started" if ok else "run_error")]
-            elif path == "/action/dry-run":
-                ok, out = _run_digest("dry_run")
-                print(f"[action/dry-run] ok={ok} |\n{out}", flush=True)
-                _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out)
-                params_out = [("n", "dry_run_done" if ok else "run_error")]
-            else:
-                email = (form.get("email", [""]) or [""])[0].strip()
-                configured = {mb["email_address"] for mb in _get_mailbox_configs()}
-                ok = False
-                out = "invalid email"
-                valid_email = bool(email and _EMAIL_RE.match(email) and email in configured)
-                if valid_email:
-                    ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
-                    print(f"[action/run-mailbox] email={email} ok={ok} |\n{out}", flush=True)
-                _log_action(
-                    self._client_ip(), "run-mailbox", email=email,
-                    result="ok" if ok else "error", detail=out,
-                )
-                if not valid_email:
-                    params_out = [("n", "unknown_mailbox")]
-                elif ok:
-                    params_out = [("n", "run_mailbox_started"), ("to", email)]
-                else:
-                    params_out = [("n", "run_error")]
-            self.send_response(303)
-            self.send_header("Location", _safe_header("/?" + urllib.parse.urlencode(params_out)))
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+        handler = self._POST_ROUTES.get(path)
+        if handler is None:
+            self._send_status(404)
             return
+        handler(self, urllib.parse.parse_qs(parsed.query))
 
-        if path == "/action/regenerate-link":
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length < 0 or length > 4096:
-                self.send_response(413)
-                self.end_headers()
-                return
-            raw_body = self.rfile.read(length) if length else b""
-            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
-            email = (form.get("email", [""]) or [""])[0].strip()
-            purpose = (form.get("purpose", [""]) or [""])[0].strip()
-            requester_ip = self._client_ip()
+    # --- GET routes ---------------------------------------------------------
 
-            configured = {mb["email_address"] for mb in _get_mailbox_configs()}
-            extra = {}
-            if not (email and _EMAIL_RE.match(email) and email in configured):
-                ok, code = False, "unknown_mailbox"
-            elif purpose not in (shared.PURPOSE_FILTERS, shared.PURPOSE_REVIEW):
-                ok, code = False, "invalid_purpose"
-            else:
-                ok, code, extra = _do_regenerate_link(email, purpose, requester_ip)
-            print(
-                f"[action/regenerate-link] email={email} purpose={purpose} "
-                f"ip={requester_ip} ok={ok} code={code}",
-                flush=True,
-            )
-            _log_action(
-                requester_ip, "regenerate-link", email=email,
-                result="ok" if ok else "error",
-                detail=f"purpose={purpose} code={code}",
-            )
-            params = [("n", code)]
-            if "to" in extra:
-                params.append(("to", extra["to"]))
-            location = "/?" + urllib.parse.urlencode(params)
-            self.send_response(303)
-            self.send_header("Location", _safe_header(location))
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+    def _get_dashboard(self, query):
+        notice_text, notice_kind = _resolve_notice(self._first(query, "n"), query)
+        self._send_html(_render_html(notice=notice_text, notice_kind=notice_kind))
 
-        if path == "/action/delete-spam":
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length < 0 or length > 4096:
-                self.send_response(413)
-                self.end_headers()
-                return
-            raw_body = self.rfile.read(length) if length else b""
-            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
-            email = (form.get("email", [""]) or [""])[0]
-            ts = (form.get("ts", [""]) or [""])[0]
-            token = (form.get("token", [""]) or [""])[0]
-            if email and ts and token and _EMAIL_RE.match(email):
-                ok, msg = _do_delete_spam(email, ts, token)
-            else:
-                ok, msg = False, "Missing or invalid parameters."
-            print(f"[action/delete-spam] email={email} ok={ok} | {msg}", flush=True)
-            _log_action(
-                self._client_ip(), "delete-spam", email=email,
-                result="ok" if ok else "error", detail=msg,
-            )
-            body = _render_result_page(
-                page_title="Delete spam \u2014 Spam Digest",
-                subtitle_html="Delete confirmed spam",
-                status_word="Done" if ok else "Error",
-                status_color="var(--ok)" if ok else "var(--err)",
-                message=msg,
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-            return
+    def _get_tokenised_page(self, query):
+        path = urllib.parse.urlparse(self.path).path
+        email, token = self._first(query, "email"), self._first(query, "token")
+        handler = _handle_filters_request if path == "/filters" else _handle_review_request
+        status, body, headers = handler(email, token, form=None)
+        _log_action(self._client_ip(), f"GET {path}", email=email, result=str(status))
+        self._send_html(body, status, headers)
 
-        if path in ("/filters", "/review"):
-            qs_params = urllib.parse.parse_qs(parsed.query)
-            email = qs_params.get("email", [""])[0]
-            token = qs_params.get("token", [""])[0]
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length < 0 or length > 32768:
-                self.send_response(413)
-                self.end_headers()
-                return
-            raw_body = self.rfile.read(length) if length else b""
-            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
-            form_action = (form.get("action", [""]) or [""])[0]
-            if path == "/filters":
-                status, body, headers = _handle_filters_request(email, token, form=form)
-            else:
-                status, body, headers = _handle_review_request(email, token, form=form)
-            _log_action(
-                self._client_ip(), f"POST {path}", email=email,
-                result=str(status),
-                detail=f"action={form_action}",
-            )
-            self.send_response(status)
-            for k, v in headers.items():
-                self.send_header(_safe_header(k), _safe_header(v))
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+    def _get_delete_spam(self, query):
+        email, ts, token = (self._first(query, k) for k in ("email", "ts", "token"))
+        # GET never deletes: mail scanners and link previewers follow links
+        # in emails. Show a confirmation page whose button POSTs.
+        if email and ts and token and _EMAIL_RE.match(email):
+            ok, msg, uids, _ = _check_delete_link(email, ts, token)
         else:
-            self.send_response(404)
-            self.end_headers()
+            ok, msg, uids = False, "Missing or invalid parameters.", []
+        _log_action(self._client_ip(), "GET delete-spam", email=email,
+                    result="ok" if ok else "error", detail=msg)
+        if ok and uids:
+            self._send_html(_render_delete_confirm_page(email, ts, token, len(uids)))
+            return
+        self._send_html(_render_result_page(
+            page_title="Delete spam \u2014 Spam Digest",
+            subtitle_html="Delete confirmed spam",
+            status_word="Nothing to do" if ok else "Error",
+            status_color="var(--muted)" if ok else "var(--err)",
+            message=msg,
+        ))
+
+    # --- POST routes --------------------------------------------------------
+
+    def _post_run_now(self, query):
+        if self._read_form(4096) is None:
+            return
+        ok, out = _run_digest("force_send")
+        print(f"[action/run-now] ok={ok} |\n{out}", flush=True)
+        _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out)
+        self._redirect_home([("n", "run_all_started" if ok else "run_error")])
+
+    def _post_dry_run(self, query):
+        if self._read_form(4096) is None:
+            return
+        ok, out = _run_digest("dry_run")
+        print(f"[action/dry-run] ok={ok} |\n{out}", flush=True)
+        _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out)
+        self._redirect_home([("n", "dry_run_done" if ok else "run_error")])
+
+    def _post_run_mailbox(self, query):
+        form = self._read_form(4096)
+        if form is None:
+            return
+        email = self._first(form, "email", strip=True)
+        configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+        ok, out = False, "invalid email"
+        valid = bool(email and _EMAIL_RE.match(email) and email in configured)
+        if valid:
+            ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
+            print(f"[action/run-mailbox] email={email} ok={ok} |\n{out}", flush=True)
+        _log_action(self._client_ip(), "run-mailbox", email=email,
+                    result="ok" if ok else "error", detail=out)
+        if not valid:
+            self._redirect_home([("n", "unknown_mailbox")])
+        elif ok:
+            self._redirect_home([("n", "run_mailbox_started"), ("to", email)])
+        else:
+            self._redirect_home([("n", "run_error")])
+
+    def _post_regenerate_link(self, query):
+        form = self._read_form(4096)
+        if form is None:
+            return
+        email = self._first(form, "email", strip=True)
+        purpose = self._first(form, "purpose", strip=True)
+        ip = self._client_ip()
+        configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+        extra = {}
+        if not (email and _EMAIL_RE.match(email) and email in configured):
+            ok, code = False, "unknown_mailbox"
+        elif purpose not in (shared.PURPOSE_FILTERS, shared.PURPOSE_REVIEW):
+            ok, code = False, "invalid_purpose"
+        else:
+            ok, code, extra = _do_regenerate_link(email, purpose, ip)
+        print(f"[action/regenerate-link] email={email} purpose={purpose} ip={ip} ok={ok} code={code}",
+              flush=True)
+        _log_action(ip, "regenerate-link", email=email, result="ok" if ok else "error",
+                    detail=f"purpose={purpose} code={code}")
+        params = [("n", code)]
+        if "to" in extra:
+            params.append(("to", extra["to"]))
+        self._redirect_home(params)
+
+    def _post_delete_spam(self, query):
+        form = self._read_form(4096)
+        if form is None:
+            return
+        email, ts, token = (self._first(form, k) for k in ("email", "ts", "token"))
+        if email and ts and token and _EMAIL_RE.match(email):
+            ok, msg = _do_delete_spam(email, ts, token)
+        else:
+            ok, msg = False, "Missing or invalid parameters."
+        print(f"[action/delete-spam] email={email} ok={ok} | {msg}", flush=True)
+        _log_action(self._client_ip(), "delete-spam", email=email,
+                    result="ok" if ok else "error", detail=msg)
+        self._send_html(_render_result_page(
+            page_title="Delete spam \u2014 Spam Digest",
+            subtitle_html="Delete confirmed spam",
+            status_word="Done" if ok else "Error",
+            status_color="var(--ok)" if ok else "var(--err)",
+            message=msg,
+        ))
+
+    def _post_tokenised_page(self, query):
+        path = urllib.parse.urlparse(self.path).path
+        email, token = self._first(query, "email"), self._first(query, "token")
+        form = self._read_form(32768)
+        if form is None:
+            return
+        handler = _handle_filters_request if path == "/filters" else _handle_review_request
+        status, body, headers = handler(email, token, form=form)
+        _log_action(self._client_ip(), f"POST {path}", email=email, result=str(status),
+                    detail=f"action={self._first(form, 'action')}")
+        self._send_html(body, status, headers)
+
+    _GET_ROUTES = {
+        "/": _get_dashboard,
+        "/status": _get_dashboard,
+        "/index.html": _get_dashboard,
+        "/filters": _get_tokenised_page,
+        "/review": _get_tokenised_page,
+        "/action/delete-spam": _get_delete_spam,
+    }
+    _POST_ROUTES = {
+        "/action/run-now": _post_run_now,
+        "/action/dry-run": _post_dry_run,
+        "/action/run-mailbox": _post_run_mailbox,
+        "/action/regenerate-link": _post_regenerate_link,
+        "/action/delete-spam": _post_delete_spam,
+        "/filters": _post_tokenised_page,
+        "/review": _post_tokenised_page,
+    }
 
     def log_message(self, fmt, *args):
         pass

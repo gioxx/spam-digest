@@ -20,6 +20,11 @@ jobs:
       - name: Build image
         run: docker build -t spam-digest:ci .
 
+      - name: Unit tests (inside the image, same Python as production)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint python3 spam-digest:ci \
+            -m unittest discover -s tests -t tests -v
+
       - name: Simulate a data volume written by an older (root) image
         run: |
           docker volume create sd_data
