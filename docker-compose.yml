@@ -37,7 +37,7 @@ services:
       # --- AI (optional) ---
       AI_PROVIDER: none         # change to 'anthropic' to enable
       # AI_API_KEY: sk-ant-...
-      # AI_MODEL: claude-haiku-4-5-20251001
+      # AI_MODEL: claude-haiku-5-5
       # AI_MAX_EMAILS: "50"
 
       # --- Schedule ---

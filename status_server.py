@@ -187,7 +187,7 @@ def _get_schedule():
 def _ai_status():
     provider = os.getenv("AI_PROVIDER", "none").strip().lower()
     api_key = bool(os.getenv("AI_API_KEY"))
-    model = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001")
+    model = os.getenv("AI_MODEL") or shared.DEFAULT_AI_MODEL
     ai_max = os.getenv("AI_MAX_EMAILS", "50")
     if provider == "none" or not provider:
         return False, "disabled", model, ai_max
@@ -1669,60 +1669,92 @@ def _render_delete_confirm_page(email, ts, token, count):
     )
 
 
-def _render_guide(active_vars):
-    def row(var, default, desc):
-        dot = (
-            "<span class='dot dot-ok' title='Set' style='margin-right:.35rem;vertical-align:middle'></span>"
-            if var in active_vars else
-            "<span class='dot dot-muted' title='Not set' style='margin-right:.35rem;vertical-align:middle'></span>"
+# Never shown on the dashboard, even partially.
+_SECRET_VARS = frozenset({"EMAIL_PASS", "SMTP_PASS", "RESEND_API_KEY", "AI_API_KEY", "DASHBOARD_PASS"})
+
+
+def _current_env_value(var):
+    """Value shown in the "Current" column: the real setting, with secrets
+    masked and MAILBOX_CONFIGS (which holds passwords) summarised. Returns
+    None when the variable is not set."""
+    raw = os.getenv(var)
+    if not raw:
+        return None
+    if var in _SECRET_VARS:
+        return "set (hidden)"
+    if var == "MAILBOX_CONFIGS":
+        n = len(shared.load_mailbox_configs())
+        return f"{n} mailbox{'es' if n != 1 else ''}"
+    raw = raw.strip()
+    return raw if len(raw) <= 60 else raw[:57] + "\u2026"
+
+
+def _startup_summary():
+    """Effective configuration, one line per topic, for the container log.
+
+    Secrets are never printed; MAILBOX_CONFIGS is reduced to the mailbox
+    addresses and folders.
+    """
+    lines = [f"spam-digest v{APP_VERSION}"]
+    for mb in _get_mailbox_configs():
+        ssl_label = "SSL" if str(mb.get("imap_use_ssl", True)).lower() not in ("false", "0", "no") else "plain"
+        to = mb.get("digest_to") or mb.get("email_address")
+        lines.append(
+            f"mailbox {mb.get('email_address')}: {mb.get('imap_server')}:{mb.get('imap_port')} "
+            f"({ssl_label}), folder {mb.get('spam_folder')}, digest to {to}"
         )
-        return f"<tr><td>{dot}{escape(var)}</td><td>{escape(str(default))}</td><td>{desc}</td></tr>"
+    _, provider, label, send_if_empty = _email_status()
+    lines.append(f"email: {label} (EMAIL_PROVIDER={provider}), send if empty: {send_if_empty}")
+    ai_ok, ai_detail, model, ai_max = _ai_status()
+    lines.append(
+        f"AI: {'enabled' if ai_ok else 'disabled'} ({ai_detail}), model {model}, max {ai_max} email(s) per run"
+        if ai_ok else f"AI: disabled ({ai_detail})"
+    )
+    base = os.getenv("WEB_BASE_URL", "").strip()
+    lines.append(f"digest links: {base}" if base else "digest links: off (WEB_BASE_URL not set)")
+    creds = _dashboard_credentials()
+    lines.append(f"dashboard login: on (user {creds[0]})" if creds else "dashboard login: off (DASHBOARD_PASS not set)")
+    return lines
 
-    def section(label):
-        return f"<tr><td colspan='3' class='guide-section-label'>{escape(label)}</td></tr>"
 
-    rows = "".join([
-        section("IMAP / Mailboxes"),
-        row("IMAP_SERVER",    "\u2014",       "IMAP hostname. <strong>Required</strong> (single mailbox mode)."),
-        row("IMAP_PORT",      "993",           "IMAP port. 993 = SSL/TLS (default), 143 = plain/STARTTLS."),
-        row("IMAP_USE_SSL",   "true",          "Set to <code>false</code> to connect without SSL/TLS (e.g. if you get an SSL record layer error). Also supported per-mailbox in MAILBOX_CONFIGS as <code>\"imap_use_ssl\": false</code>."),
-        row("EMAIL_USER",     "\u2014",       "<strong>Required</strong>. IMAP login username."),
-        row("EMAIL_PASS",     "\u2014",       "<strong>Required</strong>. IMAP login password."),
-        row("EMAIL_ADDRESS",  "EMAIL_USER",    "Display label for logs and digest."),
-        row("SPAM_FOLDER",    "Junk",          "IMAP spam folder name. Auto-detects common aliases."),
-        row("MAX_EMAILS",     "100",           "Max spam emails to include per mailbox per run."),
-        row("MAILBOX_CONFIGS","\u2014",       "JSON array for multi-mailbox mode."),
-        section("Email delivery (digest + management links)"),
-        row("EMAIL_PROVIDER", "smtp",          "<code>smtp</code> (default) or <code>resend</code>. Picks which backend sends outgoing mail."),
-        row("SMTP_HOST",      "\u2014",       "<strong>Required for SMTP provider.</strong> SMTP server hostname."),
-        row("SMTP_PORT",      "587",           "SMTP port. 465 = SSL, 587 = STARTTLS."),
-        row("SMTP_USER",      "\u2014",       "SMTP login username."),
-        row("SMTP_PASS",      "\u2014",       "SMTP login password."),
-        row("RESEND_API_KEY", "\u2014",       "<strong>Required for Resend provider.</strong> API key from resend.com (format <code>re_...</code>)."),
-        row("DIGEST_TO",      "\u2014",        "Override recipient for single-mailbox mode. If unset, digest goes to EMAIL_USER."),
-        row("DIGEST_FROM",    "SMTP_USER",     "Sender address in the digest email. With Resend, must be on a verified domain (or <code>onboarding@resend.dev</code> for quick tests)."),
-        row("SEND_IF_EMPTY",  "false",         "Send digest even when no spam found. Default: skip."),
-        section("AI Classification (Anthropic)"),
-        row("AI_PROVIDER",    "none",          "<code>anthropic</code> to enable, <code>none</code> to disable."),
-        row("AI_API_KEY",     "\u2014",       "Anthropic API key. Required when AI_PROVIDER=anthropic."),
-        row("AI_MODEL",       "claude-haiku-4-5-20251001", "Model for classification. Haiku recommended."),
-        row("AI_MAX_EMAILS",  "50",            "Max emails sent to AI per run (cost control)."),
-        section("Schedule (cron)"),
-        row("SCHEDULE_MIN",   "0",  "Cron minute (0\u201359)."),
-        row("SCHEDULE_HOUR",  "8",  "Cron hour (0\u201323)."),
-        row("SCHEDULE_DAY",   "*",  "Cron weekday. <code>*</code> = every day. 0=Sun \u2026 6=Sat."),
-        section("Web dashboard / misc"),
-        row("WEB_PORT",       "8080",  "Port for the status dashboard."),
-        row("WEB_BASE_URL",   "",      "Public base URL of the dashboard (e.g. <code>http://192.168.1.10:8080</code>). Required to include the <em>Delete confirmed spam</em> link in digest emails."),
-        row("DASHBOARD_USER", "admin", "Username for the dashboard login (only used when <code>DASHBOARD_PASS</code> is set)."),
-        row("DASHBOARD_PASS", "",      "Enables HTTP Basic login on the dashboard and its actions. The review, filters and delete pages keep using their signed links."),
-        row("RUN_ON_START",   "false", "Run the digest immediately on container start. Default: <code>false</code> (rely on cron schedule)."),
-        row("TZ",             "UTC",   "Container timezone. Example: <code>Europe/Rome</code>."),
-    ])
+# Variables shown in the "Active configuration" panel, grouped as in the
+# documentation. Only the ones actually set are listed; the full reference
+# (defaults, descriptions) lives in the KB.
+_ENV_GROUPS = (
+    ("IMAP / Mailboxes", ("MAILBOX_CONFIGS", "IMAP_SERVER", "IMAP_PORT", "IMAP_USE_SSL", "EMAIL_USER",
+                          "EMAIL_PASS", "EMAIL_ADDRESS", "SPAM_FOLDER", "MAX_EMAILS", "DIGEST_TO")),
+    ("Email delivery", ("EMAIL_PROVIDER", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS",
+                        "RESEND_API_KEY", "DIGEST_FROM", "SEND_IF_EMPTY")),
+    ("AI classification", ("AI_PROVIDER", "AI_API_KEY", "AI_MODEL", "AI_MAX_EMAILS")),
+    ("Schedule", ("SCHEDULE_MIN", "SCHEDULE_HOUR", "SCHEDULE_DAY", "RUN_ON_START", "TZ")),
+    ("Web", ("WEB_PORT", "WEB_BASE_URL", "DASHBOARD_USER", "DASHBOARD_PASS")),
+)
+_ENV_DOCS_URL = "https://kb.gioxx.org/Projects/spam-digest#environment-variables"
+
+
+def _render_guide(active_vars=None):
+    """List the environment variables that are set, with their values
+    (secrets masked). Unset variables use their defaults and are omitted."""
+    rows = ""
+    for label, names in _ENV_GROUPS:
+        group = [(n, _current_env_value(n)) for n in names]
+        group = [(n, v) for n, v in group if v is not None]
+        if not group:
+            continue
+        rows += f"<tr><td colspan='2' class='guide-section-label'>{escape(label)}</td></tr>"
+        rows += "".join(
+            f"<tr><td>{escape(n)}</td><td><code>{escape(v)}</code></td></tr>" for n, v in group
+        )
+    if not rows:
+        rows = "<tr><td colspan='2' style='color:var(--muted)'>No variables set: every setting uses its default.</td></tr>"
     return (
-        f"<details><summary>Environment Variables Reference</summary>"
-        f"<div class='guide-body'><table>"
-        f"<thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>"
+        "<details><summary>Active configuration</summary>"
+        "<div class='guide-body'>"
+        "<p style='color:var(--muted);font-size:.8rem;margin:.25rem 0 .75rem'>"
+        "Environment variables set for this container. Anything not listed uses its default; "
+        f"see the <a href='{_ENV_DOCS_URL}' target='_blank' rel='noopener'>documentation</a> "
+        "for every variable and its default.</p>"
+        "<table><thead><tr><th>Variable</th><th>Value</th></tr></thead>"
         f"<tbody>{rows}</tbody></table></div></details>"
     )
 
@@ -2291,4 +2323,6 @@ if __name__ == "__main__":
     http.server.ThreadingHTTPServer.request_queue_size = 64
     with http.server.ThreadingHTTPServer(("", port), _Handler) as httpd:
         print(f"Status dashboard listening on port {port}", flush=True)
+        for line in _startup_summary():
+            print(f"[config] {line}", flush=True)
         httpd.serve_forever()

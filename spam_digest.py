@@ -427,7 +427,7 @@ def classify_with_ai(all_mailbox_results):
         return
 
     ai_max = _parse_int(os.getenv("AI_MAX_EMAILS", str(DEFAULT_AI_MAX_EMAILS)), DEFAULT_AI_MAX_EMAILS, "AI_MAX_EMAILS")
-    model = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001").strip()
+    model = (os.getenv("AI_MODEL") or shared.DEFAULT_AI_MODEL).strip()
 
     flat_emails = []
     for result in all_mailbox_results:
@@ -832,7 +832,7 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
 
     ai_note = (
         " &nbsp;&middot;&nbsp; AI: <strong style='color:#60a5fa'>Anthropic Claude</strong> "
-        f"({escape(os.getenv('AI_MODEL', 'claude-haiku-4-5-20251001'))})"
+        f"({escape(os.getenv('AI_MODEL') or shared.DEFAULT_AI_MODEL)})"
         if show_ai else " &nbsp;&middot;&nbsp; AI: disabled"
     )
 
