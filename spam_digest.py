@@ -975,10 +975,9 @@ def save_state(results, generated_at, total_count):
 
     Runs under shared.data_lock() and writes atomically, so it cannot
     interleave with a web-server action editing the same file. When a
-    mailbox fetch failed, the actionable lists from the previous run
-    (confirmed spam UIDs, uncertain/safe review lists, spam folder) are
-    kept: a transient IMAP error must not wipe links the user may still
-    click from the previous digest.
+    mailbox fetch failed, the actionable lists (confirmed spam UIDs,
+    uncertain/safe review lists) are cleared: the previous UIDs cannot be
+    verified against the current mailbox.
     """
     with shared.data_lock():
         existing_mailboxes = {}
@@ -996,7 +995,6 @@ def save_state(results, generated_at, total_count):
 
         for r in results:
             addr = r["email_address"]
-            prev_mb = existing_mailboxes.get(addr) or {}
             entry = {
                 "email_address": addr,
                 "digest_to": r.get("digest_to") or addr,
@@ -1013,17 +1011,12 @@ def save_state(results, generated_at, total_count):
                 "uncertain_emails": _review_entries(r, "uncertain"),
                 "safe_emails": _review_entries(r, "safe"),
             }
-            if r["status"] == "error" and prev_mb:
-                for key in ("spam_folder", "confirmed_spam_uids", "uncertain_emails",
-                            "safe_emails"):
-                    if key in prev_mb:
-                        entry[key] = prev_mb[key]
-                # State files written before 0.7.0 have no spam_run_ts: the
-                # previous last_run is the timestamp that link was signed with.
-                prev_ts = prev_mb.get("spam_run_ts") or prev_mb.get("last_run")
-                if entry.get("confirmed_spam_uids") and prev_ts:
-                    entry["spam_run_ts"] = prev_ts
-            elif entry["confirmed_spam_uids"]:
+            # A failed fetch does not prove the mailbox (credentials, folder,
+            # UIDVALIDITY) is still the one the previous UIDs belong to, so
+            # previous actionable lists are dropped, not carried over:
+            # acting on stale UIDs could delete or move unrelated messages.
+            # The fresh entry built above already has empty lists.
+            if r["status"] != "error" and entry["confirmed_spam_uids"]:
                 # Timestamp the delete-spam link was signed with. Only that
                 # link may act on these UIDs (see status_server._do_delete_spam).
                 entry["spam_run_ts"] = generated_at
