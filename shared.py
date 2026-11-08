@@ -39,6 +39,105 @@ _VALID_PURPOSES = (PURPOSE_FILTERS, PURPOSE_REVIEW)
 
 
 # ---------------------------------------------------------------------------
+# Mailbox configuration (MAILBOX_CONFIGS or single-mailbox variables)
+# ---------------------------------------------------------------------------
+
+DEFAULT_SPAM_FOLDER = "Junk"
+DEFAULT_MAX_EMAILS = 100
+
+
+def parse_int(value, default, name):
+    try:
+        v = int(value)
+        if v < 0:
+            raise ValueError
+        return v
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s value '%s', falling back to %s.", name, value, default)
+        return default
+
+
+def _config_value(cfg, *keys, default=None):
+    for k in keys:
+        v = cfg.get(k)
+        if v not in (None, ""):
+            return v
+    return default
+
+
+def parse_bool(value, default=True):
+    """Parse a boolean-ish value (string or bool). Returns default on unrecognised input."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return default
+
+
+def _build_single_mailbox_config():
+    email_user = os.getenv("EMAIL_USER", "")
+    return {
+        "imap_server": os.getenv("IMAP_SERVER", ""),
+        "imap_port": parse_int(os.getenv("IMAP_PORT", "993"), 993, "IMAP_PORT"),
+        "imap_use_ssl": parse_bool(os.getenv("IMAP_USE_SSL", "true")),
+        "email_user": email_user,
+        "email_pass": os.getenv("EMAIL_PASS", ""),
+        "email_address": os.getenv("EMAIL_ADDRESS") or email_user,
+        "digest_to": os.getenv("DIGEST_TO", "").strip(),
+        "spam_folder": os.getenv("SPAM_FOLDER", DEFAULT_SPAM_FOLDER),
+        "max_emails": parse_int(os.getenv("MAX_EMAILS", str(DEFAULT_MAX_EMAILS)), DEFAULT_MAX_EMAILS, "MAX_EMAILS"),
+    }
+
+
+def _normalize_mailbox_config(raw, index):
+    email_user = _config_value(raw, "email_user", "EMAIL_USER", default="")
+    return {
+        "imap_server": _config_value(raw, "imap_server", "IMAP_SERVER", default=""),
+        "imap_port": parse_int(
+            _config_value(raw, "imap_port", "IMAP_PORT", default=993), 993, f"MAILBOX_CONFIGS[{index}].imap_port"
+        ),
+        "imap_use_ssl": parse_bool(
+            _config_value(raw, "imap_use_ssl", "IMAP_USE_SSL", default=True)
+        ),
+        "email_user": email_user,
+        "email_pass": _config_value(raw, "email_pass", "EMAIL_PASS", default=""),
+        "email_address": _config_value(raw, "email_address", "EMAIL_ADDRESS", default=email_user),
+        "digest_to": (_config_value(raw, "digest_to") or "").strip(),
+        "spam_folder": _config_value(raw, "spam_folder", "SPAM_FOLDER", default=DEFAULT_SPAM_FOLDER),
+        "max_emails": parse_int(
+            _config_value(raw, "max_emails", "MAX_EMAILS", default=DEFAULT_MAX_EMAILS),
+            DEFAULT_MAX_EMAILS, f"MAILBOX_CONFIGS[{index}].max_emails"
+        ),
+    }
+
+
+def load_mailbox_configs():
+    """Return the normalised mailbox configs from MAILBOX_CONFIGS or the
+    single-mailbox variables. Used by both the digest and the web server."""
+    raw = os.getenv("MAILBOX_CONFIGS")
+    if not raw:
+        return [_build_single_mailbox_config()]
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logging.error("Invalid MAILBOX_CONFIGS JSON: %s. Falling back to single mailbox.", e)
+        return [_build_single_mailbox_config()]
+    if not isinstance(parsed, list) or not parsed:
+        logging.error("MAILBOX_CONFIGS must be a non-empty JSON array. Falling back to single mailbox.")
+        return [_build_single_mailbox_config()]
+    result = []
+    for i, entry in enumerate(parsed):
+        if not isinstance(entry, dict):
+            logging.warning("Skipping MAILBOX_CONFIGS[%s]: must be an object.", i)
+            continue
+        result.append(_normalize_mailbox_config(entry, i))
+    if not result:
+        logging.error("MAILBOX_CONFIGS: no valid entries. Falling back to single mailbox.")
+        return [_build_single_mailbox_config()]
+    return result
+
+
+# ---------------------------------------------------------------------------
 # File helpers: atomic writes and a cross-process lock.
 #
 # The digest run (cron) and the web server are separate processes that both
