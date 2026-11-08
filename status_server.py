@@ -13,7 +13,6 @@ import imaplib
 import json
 import os
 import re
-import socketserver
 import ssl
 import subprocess
 import sys
@@ -42,6 +41,7 @@ STATE_FILE = shared.STATE_FILE
 SECRET_FILE = shared.SECRET_FILE
 APP_VERSION = shared.APP_VERSION
 _DELETE_TOKEN_MAX_AGE_DAYS = 7
+_IMAP_TIMEOUT_SECS = 30
 _ACTIONS_LOG_FILE = os.path.join(shared.DATA_DIR, "actions.log")
 
 # Rate limiter — best-effort, in-memory, per remote IP. Tokenized management
@@ -226,9 +226,9 @@ def _open_imap(cfg, folder=None):
     email_pass = cfg.get("email_pass", "")
     try:
         if imap_use_ssl:
-            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
+            mail = imaplib.IMAP4_SSL(imap_server, imap_port, timeout=_IMAP_TIMEOUT_SECS)
         else:
-            mail = imaplib.IMAP4(imap_server, imap_port)
+            mail = imaplib.IMAP4(imap_server, imap_port, timeout=_IMAP_TIMEOUT_SECS)
         mail.login(email_user, email_pass)
         if folder is not None:
             res, _ = mail.select(f'"{folder}"')
@@ -254,8 +254,7 @@ def _fetch_spam_headers(email, limit=200):
     cfg = _get_mailbox_config(email)
     if cfg is None:
         return [], f"No IMAP config found for {email}."
-    spam_folder = cfg.get("spam_folder") or "Junk"
-    mail, err = _open_imap(cfg, folder=spam_folder)
+    mail, err = _open_imap(cfg, folder=_spam_folder_for(email, cfg))
     if mail is None:
         return [], err
     out = []
@@ -331,88 +330,75 @@ def _verify_mgmt_request(email, purpose, token):
     return True, "ok"
 
 
-def _do_delete_spam(email, ts, token):
-    """Verify token, connect to IMAP, delete confirmed spam UIDs, update state.
-
-    Returns (success: bool, message: str).
-    """
-    secret = shared.load_secret()
-    if secret is None:
-        return False, "Secret key not found — run the digest at least once first."
-
-    ok, reason = _verify_delete_token(secret, email, ts, token)
-    if not ok:
-        return False, f"Access denied: {reason}."
-
-    # Load UIDs from state
-    state = _get_last_run()
-    if not state:
-        return False, "No run state found."
-    mb_state = next(
+def _get_state_mailbox(email):
+    """Return the persisted state entry for `email`, or None."""
+    state = _get_last_run() or {}
+    return next(
         (m for m in state.get("mailboxes", []) if m.get("email_address") == email),
         None,
     )
+
+
+def _spam_folder_for(email, cfg):
+    """Folder the last digest run actually read for `email`.
+
+    UIDs are per-folder: the digest may have fallen back to an alias (e.g.
+    "Spam" when "Junk" does not exist), so prefer the folder recorded in the
+    state file over the configured one.
+    """
+    mb = _get_state_mailbox(email) or {}
+    return mb.get("spam_folder") or (cfg or {}).get("spam_folder") or "Junk"
+
+
+def _check_delete_link(email, ts, token):
+    """Validate a delete-spam link. Returns (ok, msg, uids)."""
+    secret = shared.load_secret()
+    if secret is None:
+        return False, "Secret key not found — run the digest at least once first.", []
+    ok, reason = _verify_delete_token(secret, email, ts, token)
+    if not ok:
+        return False, f"Access denied: {reason}.", []
+    mb_state = _get_state_mailbox(email)
     if mb_state is None:
-        return False, f"Mailbox {email} not found in state."
-
-    uids = mb_state.get("confirmed_spam_uids", [])
+        return False, f"Mailbox {email} not found in state.", []
+    uids = [str(u) for u in (mb_state.get("confirmed_spam_uids") or [])]
+    # The link may only act on the UIDs of the run it was issued for. An
+    # older (still unexpired) link must not delete the spam of a newer run
+    # that the user has not seen yet.
+    run_ts = mb_state.get("spam_run_ts") or mb_state.get("last_run")
+    if uids and ts != run_ts:
+        return False, (
+            "This link belongs to an older digest. Use the link in the most "
+            "recent digest email."
+        ), []
     if not uids:
-        return True, "No confirmed spam UIDs on record — already deleted or digest had none."
+        return True, "No confirmed spam on record — already deleted or the digest had none.", []
+    return True, "ok", uids
 
-    spam_folder = mb_state.get("spam_folder", "Junk")
 
-    # Find IMAP credentials
-    cfg = next(
-        (c for c in _get_mailbox_configs() if c.get("email_address") == email),
-        None,
-    )
-    if cfg is None:
-        return False, f"No IMAP config found for {email}."
+def _do_delete_spam(email, ts, token):
+    """Verify the link, delete the confirmed spam UIDs, update state.
 
-    imap_server = cfg.get("imap_server", "")
-    imap_port = int(cfg.get("imap_port", 993))
-    imap_use_ssl = str(cfg.get("imap_use_ssl", "true")).lower() not in ("false", "0", "no")
-    email_user = cfg.get("email_user") or cfg.get("email_address", "")
-    email_pass = cfg.get("email_pass", "")
-
-    mail = None
-    try:
-        if imap_use_ssl:
-            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
-        else:
-            mail = imaplib.IMAP4(imap_server, imap_port)
-        mail.login(email_user, email_pass)
-        mail.select(spam_folder)
-
-        deleted = 0
-        for uid in uids:
-            uid_b = uid.encode() if isinstance(uid, str) else uid
-            typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
-            if typ == "OK":
-                deleted += 1
-        mail.expunge()
-    except ssl.SSLError as e:
-        return False, f"SSL error connecting to {imap_server}: {e}"
-    except imaplib.IMAP4.error as e:
-        return False, f"IMAP error: {e}"
-    except Exception as e:
-        return False, f"Unexpected error: {e}"
-    finally:
-        if mail is not None:
-            try:
-                mail.logout()
-            except Exception:
-                pass
-
-    # Clear UIDs from state so the link becomes a no-op if clicked again
-    mb_state["confirmed_spam_uids"] = []
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except OSError:
-        pass
-
-    return True, f"Deleted {deleted} of {len(uids)} confirmed spam email(s) from {email}."
+    Returns (success: bool, message: str).
+    """
+    ok, msg, uids = _check_delete_link(email, ts, token)
+    if not ok or not uids:
+        return ok, msg
+    ok, err = _imap_move_or_delete(email, uids, "delete")
+    if not ok:
+        return False, f"{err} Nothing was deleted; you can retry."
+    # Clear UIDs so the link becomes a no-op if clicked again.
+    with shared.data_lock():
+        state = _get_last_run() or {}
+        for mb in state.get("mailboxes", []):
+            if mb.get("email_address") == email:
+                mb["confirmed_spam_uids"] = []
+                break
+        try:
+            shared.atomic_write_json(STATE_FILE, state)
+        except OSError as e:
+            print(f"[delete-spam] could not update state: {e}", flush=True)
+    return True, f"Deleted {len(uids)} confirmed spam email(s) from {email}."
 
 
 # ---------------------------------------------------------------------------
@@ -455,24 +441,22 @@ def _get_uncertain_for_mailbox(email):
 def _remove_review_uids(email, uids):
     """Drop UIDs from every persisted review list so they disappear from /review."""
     drop = {str(u) for u in uids}
-    try:
-        with open(STATE_FILE) as f:
-            state = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return
-    for mb in state.get("mailboxes", []):
-        if mb.get("email_address") == email:
-            for key in _REVIEW_KINDS.values():
-                if key in mb:
-                    mb[key] = [
-                        e for e in (mb.get(key) or []) if str(e.get("uid")) not in drop
-                    ]
-            break
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except OSError:
-        pass
+    with shared.data_lock():
+        state = _get_last_run()
+        if not state:
+            return
+        for mb in state.get("mailboxes", []):
+            if mb.get("email_address") == email:
+                for key in _REVIEW_KINDS.values():
+                    if key in mb:
+                        mb[key] = [
+                            e for e in (mb.get(key) or []) if str(e.get("uid")) not in drop
+                        ]
+                break
+        try:
+            shared.atomic_write_json(STATE_FILE, state)
+        except OSError as e:
+            print(f"[review] could not update state: {e}", flush=True)
 
 
 def _imap_move_or_delete(email, uids, op):
@@ -484,8 +468,7 @@ def _imap_move_or_delete(email, uids, op):
     cfg = _get_mailbox_config(email)
     if cfg is None:
         return False, f"No IMAP config found for {email}."
-    spam_folder = cfg.get("spam_folder") or "Junk"
-    mail, err = _open_imap(cfg, folder=spam_folder)
+    mail, err = _open_imap(cfg, folder=_spam_folder_for(email, cfg))
     if mail is None:
         return False, err
     uid_set = ",".join(str(u) for u in uids).encode()
@@ -1621,6 +1604,34 @@ def _render_result_page(page_title, subtitle_html, status_word, status_color, me
     )
 
 
+def _render_delete_confirm_page(email, ts, token, count):
+    """Confirmation step for /action/delete-spam (the button POSTs)."""
+    body_html = (
+        "<main style='max-width:560px;margin:4rem auto;padding:0 1.5rem'>"
+        "<div style='background:var(--surface2);border:1px solid var(--border);"
+        "border-radius:var(--radius);padding:2rem 2.25rem;text-align:center'>"
+        "<h2 style='margin:0 0 .75rem;color:var(--err);font-size:1.25rem;font-weight:600'>"
+        "Delete confirmed spam</h2>"
+        f"<p style='color:var(--muted);margin:.5rem 0 1.5rem;font-size:0.9rem'>"
+        f"Permanently delete {count} email(s) classified as spam in the digest of "
+        f"{escape(ts)} for {escape(email)}? This cannot be undone.</p>"
+        "<form method='POST' action='/action/delete-spam' style='display:inline'>"
+        f"<input type='hidden' name='email' value='{escape(email)}'>"
+        f"<input type='hidden' name='ts' value='{escape(ts)}'>"
+        f"<input type='hidden' name='token' value='{escape(token)}'>"
+        "<button type='submit' style='background:var(--err-dim);color:var(--err);"
+        "border:1px solid var(--err-border);padding:0.55rem 1.2rem;border-radius:0.375rem;"
+        "font-size:0.875rem;cursor:pointer;font-weight:600'>"
+        f"&#10005; Delete {count} email(s)</button></form>"
+        "</div></main>"
+    )
+    return _page_shell(
+        page_title="Delete spam — Spam Digest",
+        subtitle_html="Delete confirmed spam",
+        body_html=body_html,
+    )
+
+
 def _render_guide(active_vars):
     def row(var, default, desc):
         dot = (
@@ -1697,10 +1708,12 @@ def _render_html(notice=None, notice_kind="ok"):
             else f"<span style='color:var(--muted)'>{addr}</span>"
         )
         run_btn = (
-            f"<a class='btn-action' href='/action/run-mailbox?email={addr_enc}'"
+            f"<form method='POST' action='/action/run-mailbox' style='display:inline'"
             f" data-confirm='Run the digest for {addr} now? An email will be sent if spam is found.'"
             f" data-confirm-title='Run digest now' data-confirm-kind='primary'>"
-            f"<span class='btn-icon' aria-hidden='true'>\u25b6</span>Run</a>"
+            f"<input type='hidden' name='email' value='{addr}'>"
+            f"<button type='submit' class='btn-action'>"
+            f"<span class='btn-icon' aria-hidden='true'>\u25b6</span>Run</button></form>"
         )
         if mgmt_ready:
             filters_btn = (
@@ -1800,10 +1813,11 @@ def _render_html(notice=None, notice_kind="ok"):
         f"<div class='mini-box'><span class='stat-label'>Mailboxes</span><span class='stat-value'>{len(mailboxes)}</span></div>"
         f"</div></section></div>"
         f"<section class='card'><div class='card-header'><p class='card-title'>Mailboxes</p>"
-        f"<a class='btn-action' href='/action/run-now'"
+        f"<form method='POST' action='/action/run-now' style='display:inline'"
         f" data-confirm='Run the digest for all configured mailboxes now?'"
         f" data-confirm-title='Run digest now' data-confirm-kind='primary'>"
-        f"<span class='btn-icon' aria-hidden='true'>\u25b6</span>Run all</a></div>"
+        f"<button type='submit' class='btn-action'>"
+        f"<span class='btn-icon' aria-hidden='true'>\u25b6</span>Run all</button></form></div>"
         f"<div class='table-wrap'><table><thead><tr><th>Email address</th><th class='hide-mobile'>IMAP server</th><th class='hide-mobile'>Port</th><th class='hide-mobile'>Spam folder</th><th class='hide-mobile'>Max emails</th><th>Digest to</th><th>Management</th></tr></thead>"
         f"<tbody>{mb_rows}</tbody></table></div>"
         "<p style='color:var(--muted);font-size:.72rem;margin-top:.75rem;padding:0 .25rem'>"
@@ -1862,6 +1876,11 @@ def _run_digest(action, email=None, allowed_emails=None):
 
 
 _TOKENIZED_PATHS = ("/filters", "/review", "/action/delete-spam", "/action/regenerate-link")
+# Unauthenticated dashboard actions. POST-only, and cross-site requests are
+# rejected so another website cannot trigger them from the user's browser.
+_DASHBOARD_POST_PATHS = (
+    "/action/run-now", "/action/run-mailbox", "/action/dry-run", "/action/regenerate-link",
+)
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -1870,6 +1889,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self.client_address[0]
         except Exception:
             return "unknown"
+
+    def end_headers(self):
+        # Tokens travel in query strings: never leak them via Referer, and
+        # keep the pages out of frames (clickjacking on action buttons).
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        super().end_headers()
+
+    def _reject_cross_site(self):
+        """Return True (and respond 403) for a cross-site browser request.
+
+        Uses Sec-Fetch-Site, which every current browser sends and a page on
+        another site cannot forge. Requests without it (curl, scripts) pass,
+        and so do same-site ones, which keeps reverse-proxy setups working
+        whatever Host/Origin they forward.
+        """
+        if (self.headers.get("Sec-Fetch-Site") or "").lower() != "cross-site":
+            return False
+        _log_action(self._client_ip(), f"POST {self.path}", result="forbidden", detail="cross-site")
+        body = b"Cross-site request rejected."
+        self.send_response(403)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return True
 
     def _enforce_rate_limit(self, action):
         """Return True if the request should be throttled (already responded to)."""
@@ -1906,49 +1952,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
-        elif self.path == "/action/run-now":
-            ok, out = _run_digest("force_send")
-            print(f"[action/run-now] ok={ok} |\n{out}", flush=True)
-            _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out)
-            location = "/?" + urllib.parse.urlencode(
-                [("n", "run_all_started" if ok else "run_error")]
-            )
-            self.send_response(303)
-            self.send_header("Location", _safe_header(location))
-            self.end_headers()
-        elif self.path.startswith("/action/run-mailbox"):
-            qs = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(qs)
-            email = params.get("email", [""])[0]
-            configured = {mb["email_address"] for mb in _get_mailbox_configs()}
-            ok = False
-            out = "invalid email"
-            valid_email = bool(email and _EMAIL_RE.match(email) and email in configured)
-            if valid_email:
-                ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
-                print(f"[action/run-mailbox] email={email} ok={ok} |\n{out}", flush=True)
-            _log_action(
-                self._client_ip(), "run-mailbox", email=email,
-                result="ok" if ok else "error", detail=out,
-            )
-            if not valid_email:
-                code, params_out = "unknown_mailbox", [("n", "unknown_mailbox")]
-            elif ok:
-                code, params_out = "run_mailbox_started", [("n", "run_mailbox_started"), ("to", email)]
-            else:
-                code, params_out = "run_error", [("n", "run_error")]
-            self.send_response(303)
-            self.send_header("Location", _safe_header("/?" + urllib.parse.urlencode(params_out)))
-            self.end_headers()
-        elif self.path == "/action/dry-run":
-            ok, out = _run_digest("dry_run")
-            print(f"[action/dry-run] ok={ok} |\n{out}", flush=True)
-            _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out)
-            location = "/?" + urllib.parse.urlencode(
-                [("n", "dry_run_done" if ok else "run_error")]
-            )
-            self.send_response(303)
-            self.send_header("Location", _safe_header(location))
+        elif parsed.path in _DASHBOARD_POST_PATHS:
+            # State-changing dashboard actions are POST-only (see do_POST).
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.send_header("Content-Length", "0")
             self.end_headers()
         elif self.path.startswith("/filters") or self.path.startswith("/review"):
             parsed = urllib.parse.urlparse(self.path)
@@ -1976,24 +1984,26 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             email = params.get("email", [""])[0]
             ts = params.get("ts", [""])[0]
             token = params.get("token", [""])[0]
+            # GET never deletes: mail scanners and link previewers follow
+            # links in emails. Show a confirmation page whose button POSTs.
             if email and ts and token and _EMAIL_RE.match(email):
-                ok, msg = _do_delete_spam(email, ts, token)
+                ok, msg, uids = _check_delete_link(email, ts, token)
             else:
-                ok, msg = False, "Missing or invalid parameters."
-            print(f"[action/delete-spam] email={email} ok={ok} | {msg}", flush=True)
+                ok, msg, uids = False, "Missing or invalid parameters.", []
             _log_action(
-                self._client_ip(), "delete-spam", email=email,
+                self._client_ip(), "GET delete-spam", email=email,
                 result="ok" if ok else "error", detail=msg,
             )
-            status_word = "Done" if ok else "Error"
-            status_color = "var(--ok)" if ok else "var(--err)"
-            body = _render_result_page(
-                page_title="Delete spam \u2014 Spam Digest",
-                subtitle_html="Delete confirmed spam",
-                status_word=status_word,
-                status_color=status_color,
-                message=msg,
-            ).encode("utf-8")
+            if ok and uids:
+                body = _render_delete_confirm_page(email, ts, token, len(uids)).encode("utf-8")
+            else:
+                body = _render_result_page(
+                    page_title="Delete spam \u2014 Spam Digest",
+                    subtitle_html="Delete confirmed spam",
+                    status_word="Nothing to do" if ok else "Error",
+                    status_color="var(--muted)" if ok else "var(--err)",
+                    message=msg,
+                ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -2009,6 +2019,51 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         if path.startswith(_TOKENIZED_PATHS) and self._enforce_rate_limit(f"POST {path}"):
             return
+        if path in _DASHBOARD_POST_PATHS and self._reject_cross_site():
+            return
+        if path in ("/action/run-now", "/action/dry-run", "/action/run-mailbox"):
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length < 0 or length > 4096:
+                self.send_response(413)
+                self.end_headers()
+                return
+            raw_body = self.rfile.read(length) if length else b""
+            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
+            if path == "/action/run-now":
+                ok, out = _run_digest("force_send")
+                print(f"[action/run-now] ok={ok} |\n{out}", flush=True)
+                _log_action(self._client_ip(), "run-now", result="ok" if ok else "error", detail=out)
+                params_out = [("n", "run_all_started" if ok else "run_error")]
+            elif path == "/action/dry-run":
+                ok, out = _run_digest("dry_run")
+                print(f"[action/dry-run] ok={ok} |\n{out}", flush=True)
+                _log_action(self._client_ip(), "dry-run", result="ok" if ok else "error", detail=out)
+                params_out = [("n", "dry_run_done" if ok else "run_error")]
+            else:
+                email = (form.get("email", [""]) or [""])[0].strip()
+                configured = {mb["email_address"] for mb in _get_mailbox_configs()}
+                ok = False
+                out = "invalid email"
+                valid_email = bool(email and _EMAIL_RE.match(email) and email in configured)
+                if valid_email:
+                    ok, out = _run_digest("mailbox", email=email, allowed_emails=configured)
+                    print(f"[action/run-mailbox] email={email} ok={ok} |\n{out}", flush=True)
+                _log_action(
+                    self._client_ip(), "run-mailbox", email=email,
+                    result="ok" if ok else "error", detail=out,
+                )
+                if not valid_email:
+                    params_out = [("n", "unknown_mailbox")]
+                elif ok:
+                    params_out = [("n", "run_mailbox_started"), ("to", email)]
+                else:
+                    params_out = [("n", "run_error")]
+            self.send_response(303)
+            self.send_header("Location", _safe_header("/?" + urllib.parse.urlencode(params_out)))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         if path == "/action/regenerate-link":
             length = int(self.headers.get("Content-Length", "0") or "0")
             if length < 0 or length > 4096:
@@ -2047,6 +2102,41 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Location", _safe_header(location))
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+
+        if path == "/action/delete-spam":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length < 0 or length > 4096:
+                self.send_response(413)
+                self.end_headers()
+                return
+            raw_body = self.rfile.read(length) if length else b""
+            form = urllib.parse.parse_qs(raw_body.decode("utf-8", errors="replace"))
+            email = (form.get("email", [""]) or [""])[0]
+            ts = (form.get("ts", [""]) or [""])[0]
+            token = (form.get("token", [""]) or [""])[0]
+            if email and ts and token and _EMAIL_RE.match(email):
+                ok, msg = _do_delete_spam(email, ts, token)
+            else:
+                ok, msg = False, "Missing or invalid parameters."
+            print(f"[action/delete-spam] email={email} ok={ok} | {msg}", flush=True)
+            _log_action(
+                self._client_ip(), "delete-spam", email=email,
+                result="ok" if ok else "error", detail=msg,
+            )
+            body = _render_result_page(
+                page_title="Delete spam \u2014 Spam Digest",
+                subtitle_html="Delete confirmed spam",
+                status_word="Done" if ok else "Error",
+                status_color="var(--ok)" if ok else "var(--err)",
+                message=msg,
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path in ("/filters", "/review"):
@@ -2094,7 +2184,10 @@ if __name__ == "__main__":
     except ValueError:
         print(f"Invalid WEB_PORT '{port_raw}', defaulting to 8080.", flush=True)
         port = 8080
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", port), _Handler) as httpd:
+    # Threaded: a digest run (up to 120 s) or a slow IMAP action must not
+    # block every other request. Shared files are guarded by shared.data_lock().
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
+    http.server.ThreadingHTTPServer.daemon_threads = True
+    with http.server.ThreadingHTTPServer(("", port), _Handler) as httpd:
         print(f"Status dashboard listening on port {port}", flush=True)
         httpd.serve_forever()

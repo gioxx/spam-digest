@@ -239,6 +239,10 @@ Senders on the **allowlist** are always moved out of spam into INBOX on each dig
 
 Both features require `WEB_BASE_URL` (for building URLs) and a working SMTP configuration (for delivering the rotated link).
 
+**Delete confirmed spam link:** the **🗑 Delete N confirmed spam email(s)** button in the digest opens a confirmation page; emails are deleted only when you press the button there. Opening the link alone (for example, a mail security scanner checking links) deletes nothing. The link only works for the spam of the digest it came from: once a newer digest has run, use the link in the newer email.
+
+**Dashboard security:** the dashboard has no login, so expose it only on a trusted network or behind an authenticating reverse proxy. Its actions (Run, Run all, Filters link rotation) are POST-only and reject cross-site browser requests, so another website cannot trigger them through your browser.
+
 ---
 
 ## CLI options
@@ -247,7 +251,10 @@ Both features require `WEB_BASE_URL` (for building URLs) and a working SMTP conf
 python spam_digest.py [options]
 
   --dry-run       Fetch and classify emails but do not send the digest.
-                  Saves the HTML to /tmp/spam_digest_dry_run.html.
+                  Saves the HTML to /tmp/spam_digest_dry_run_<recipient>.html.
+                  Nothing is changed: filter/allowlist rules are evaluated
+                  but no email is deleted or moved, links are not rotated
+                  and the state file is not updated.
 
   --force-send    Send the digest even if no spam emails were found.
                   Overrides SEND_IF_EMPTY=false.

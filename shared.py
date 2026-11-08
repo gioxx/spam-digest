@@ -4,12 +4,15 @@ Imported by both spam_digest.py and status_server.py to keep token signing
 and nonce handling identical across the two processes.
 """
 
+import contextlib
+import fcntl
 import hashlib
 import hmac
 import json
 import logging
 import os
 import secrets
+import tempfile
 import smtplib
 import ssl
 import urllib.error
@@ -17,7 +20,7 @@ import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.7.0"
 
 DATA_DIR = "/data"
 STATE_FILE = os.path.join(DATA_DIR, "spam_digest_last_run.json")
@@ -25,6 +28,7 @@ SECRET_FILE = os.path.join(DATA_DIR, "spam_digest_secret.key")
 NONCES_FILE = os.path.join(DATA_DIR, "spam_digest_nonces.json")
 FILTERS_FILE = os.path.join(DATA_DIR, "spam_digest_filters.json")
 ALLOWLIST_FILE = os.path.join(DATA_DIR, "spam_digest_allowlist.json")
+_LOCK_FILE = os.path.join(DATA_DIR, ".spam_digest.lock")
 
 # Purposes for management tokens. Keep these short and stable — they are
 # part of the signed payload, so changing a value invalidates all outstanding
@@ -34,21 +38,88 @@ PURPOSE_REVIEW = "review"
 _VALID_PURPOSES = (PURPOSE_FILTERS, PURPOSE_REVIEW)
 
 
-def load_or_create_secret():
-    """Return the 32-byte HMAC signing secret, creating it on first use."""
+# ---------------------------------------------------------------------------
+# File helpers: atomic writes and a cross-process lock.
+#
+# The digest run (cron) and the web server are separate processes that both
+# read-modify-write the same JSON files. Writes go through a temp file +
+# os.replace() so a crash or a concurrent reader never sees a truncated file,
+# and read-modify-write sequences hold an fcntl lock so updates from one
+# process are not lost by the other.
+# ---------------------------------------------------------------------------
+
+def atomic_write_text(path, text, mode=0o600):
+    """Write `text` to `path` atomically (temp file in the same dir + rename).
+
+    Raises OSError on failure; the previous file content is left untouched.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
     try:
-        with open(SECRET_FILE) as f:
-            return bytes.fromhex(f.read().strip())
-    except FileNotFoundError:
-        secret = os.urandom(32)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
         try:
-            with open(SECRET_FILE, "w") as f:
-                f.write(secret.hex())
+            os.unlink(tmp)
         except OSError:
             pass
-        return secret
-    except Exception:
-        return os.urandom(32)
+        raise
+
+
+def atomic_write_json(path, data, indent=None):
+    atomic_write_text(path, json.dumps(data, indent=indent))
+
+
+@contextlib.contextmanager
+def data_lock():
+    """Exclusive cross-process lock for read-modify-write on /data files.
+
+    Re-entrant within a thread is NOT supported: do not nest. If the lock
+    file cannot be opened (read-only volume, missing dir) the body runs
+    unlocked rather than failing the whole operation.
+    """
+    try:
+        fh = open(_LOCK_FILE, "a")
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+def load_or_create_secret():
+    """Return the 32-byte HMAC signing secret, creating it on first use.
+
+    A missing or corrupted secret file is replaced with a fresh secret
+    (mode 0600). Links signed with a corrupted secret could never be
+    verified anyway, so regenerating is the only way to get working links.
+    """
+    try:
+        with open(SECRET_FILE) as f:
+            secret = bytes.fromhex(f.read().strip())
+        if len(secret) >= 16:
+            return secret
+        logging.error("Secret file %s is too short; regenerating it.", SECRET_FILE)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        logging.error("Secret file %s is unreadable (%s); regenerating it.", SECRET_FILE, e)
+    secret = os.urandom(32)
+    try:
+        atomic_write_text(SECRET_FILE, secret.hex(), mode=0o600)
+    except OSError as e:
+        logging.error("Could not persist secret file %s: %s", SECRET_FILE, e)
+    return secret
 
 
 def load_secret():
@@ -101,10 +172,9 @@ def _load_nonces():
 
 def _save_nonces(nonces):
     try:
-        with open(NONCES_FILE, "w") as f:
-            json.dump(nonces, f)
-    except OSError:
-        pass
+        atomic_write_json(NONCES_FILE, nonces)
+    except OSError as e:
+        logging.error("Could not write nonces file %s: %s", NONCES_FILE, e)
 
 
 def get_nonce(email, purpose):
@@ -118,23 +188,25 @@ def get_or_create_nonce(email, purpose):
     """Return the current nonce for (email, purpose), creating one if absent."""
     if purpose not in _VALID_PURPOSES:
         raise ValueError(f"unknown token purpose: {purpose!r}")
-    nonces = _load_nonces()
-    mb = nonces.setdefault(email, {})
-    if not mb.get(purpose):
-        mb[purpose] = secrets.token_hex(16)
-        _save_nonces(nonces)
-    return mb[purpose]
+    with data_lock():
+        nonces = _load_nonces()
+        mb = nonces.setdefault(email, {})
+        if not mb.get(purpose):
+            mb[purpose] = secrets.token_hex(16)
+            _save_nonces(nonces)
+        return mb[purpose]
 
 
 def rotate_nonce(email, purpose):
     """Force a new nonce for (email, purpose), revoking existing links."""
     if purpose not in _VALID_PURPOSES:
         raise ValueError(f"unknown token purpose: {purpose!r}")
-    nonces = _load_nonces()
-    mb = nonces.setdefault(email, {})
-    mb[purpose] = secrets.token_hex(16)
-    _save_nonces(nonces)
-    return mb[purpose]
+    with data_lock():
+        nonces = _load_nonces()
+        mb = nonces.setdefault(email, {})
+        mb[purpose] = secrets.token_hex(16)
+        _save_nonces(nonces)
+        return mb[purpose]
 
 
 def new_nonce():
@@ -157,9 +229,10 @@ def commit_nonce(email, purpose, nonce):
     """
     if purpose not in _VALID_PURPOSES:
         raise ValueError(f"unknown token purpose: {purpose!r}")
-    nonces = _load_nonces()
-    nonces.setdefault(email, {})[purpose] = nonce
-    _save_nonces(nonces)
+    with data_lock():
+        nonces = _load_nonces()
+        nonces.setdefault(email, {})[purpose] = nonce
+        _save_nonces(nonces)
 
 
 # ---------------------------------------------------------------------------
@@ -185,19 +258,29 @@ def _load_json_dict(path):
             data = json.load(f)
             if isinstance(data, dict):
                 return data
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
         pass
-    except Exception:
-        pass
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        logging.error("Could not read %s (%s); treating it as empty.", path, e)
     return {}
 
 
 def _save_json_dict(path, data):
     try:
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    except OSError:
-        pass
+        atomic_write_json(path, data, indent=2)
+    except OSError as e:
+        logging.error("Could not write %s: %s", path, e)
+
+
+def _locked(fn):
+    """Run `fn` while holding data_lock() (read-modify-write helpers)."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with data_lock():
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 def load_filters():
@@ -238,6 +321,7 @@ def extract_sender_address(from_header):
     return addr
 
 
+@_locked
 def add_filter_rule(mailbox_email, rule_type, value, now_str):
     """Add a filter rule for a mailbox. Returns the new rule dict.
 
@@ -267,6 +351,7 @@ def add_filter_rule(mailbox_email, rule_type, value, now_str):
     return new_rule
 
 
+@_locked
 def remove_filter_rule(mailbox_email, rule_id):
     """Remove a filter rule by id. Returns True if removed, False if not found."""
     data = load_filters()
@@ -282,6 +367,7 @@ def remove_filter_rule(mailbox_email, rule_id):
     return True
 
 
+@_locked
 def add_allowlist_sender(mailbox_email, sender_addr):
     """Add a sender to the mailbox allowlist. Returns True if newly added."""
     addr = (sender_addr or "").strip().lower()
@@ -297,6 +383,7 @@ def add_allowlist_sender(mailbox_email, sender_addr):
     return True
 
 
+@_locked
 def remove_allowlist_sender(mailbox_email, sender_addr):
     """Remove a sender from the mailbox allowlist. Returns True if removed."""
     addr = (sender_addr or "").strip().lower()
@@ -325,6 +412,7 @@ def get_allowlist_rules(mailbox_email):
     return load_allowlist().get(mailbox_email, {}).get("rules", [])
 
 
+@_locked
 def add_allowlist_rule(mailbox_email, rule_type, value, now_str):
     """Add an allowlist rule for a mailbox. Returns the new rule dict.
 
@@ -354,6 +442,7 @@ def add_allowlist_rule(mailbox_email, rule_type, value, now_str):
     return new_rule
 
 
+@_locked
 def remove_allowlist_rule(mailbox_email, rule_id):
     """Remove an allowlist rule by id. Returns True if removed, False if not found."""
     data = load_allowlist()
