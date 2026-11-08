@@ -779,29 +779,35 @@ def build_html_digest(all_results, generated_at, web_base_url=None, delete_token
             spam_e = [e for e in emails if e.get("ai_label") == "spam"]
             unclassified = [e for e in emails if e.get("ai_label") is None]
             sections = ""
+
+            def _review_btn(label_text, bg):
+                if not (web_base_url and review_tokens and r["email_address"] in review_tokens):
+                    return ""
+                rtoken = review_tokens[r["email_address"]]
+                addr_enc = urllib.parse.quote(r["email_address"], safe="")
+                review_url = f"{web_base_url}/review?email={addr_enc}&token={rtoken}"
+                return (
+                    f"<div style='text-align:center;margin:10px 0 4px'>"
+                    f"<a href='{review_url}' style='display:inline-block;background:{bg};"
+                    f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
+                    f"font-weight:600;text-decoration:none;letter-spacing:0.01em'>"
+                    f"\U0001f50d {label_text}"
+                    f"</a></div>"
+                )
+
             if safe_e:
+                safe_btn = _review_btn(
+                    f"Review {len(safe_e)} probably legitimate email(s)", "#16a34a"
+                )
                 sections += (
                     f"<div class='section' style='padding:12px 14px 0'>"
                     f"<div class='section-title safe'>\U0001f7e2 Probably legitimate ({len(safe_e)}) \u2014 review before losing them</div>"
-                    f"{_table_for_emails(safe_e, True)}</div>"
+                    f"{_table_for_emails(safe_e, True)}{safe_btn}</div>"
                 )
             if uncertain_e:
-                review_btn = ""
-                if web_base_url and review_tokens and r["email_address"] in review_tokens:
-                    rtoken = review_tokens[r["email_address"]]
-                    addr_enc = urllib.parse.quote(r["email_address"], safe="")
-                    review_url = (
-                        f"{web_base_url}/review"
-                        f"?email={addr_enc}&token={rtoken}"
-                    )
-                    review_btn = (
-                        f"<div style='text-align:center;margin:10px 0 4px'>"
-                        f"<a href='{review_url}' style='display:inline-block;background:#2563eb;"
-                        f"color:#ffffff;padding:7px 18px;border-radius:6px;font-size:0.82rem;"
-                        f"font-weight:600;text-decoration:none;letter-spacing:0.01em'>"
-                        f"\U0001f50d Review {len(uncertain_e)} uncertain email(s)"
-                        f"</a></div>"
-                    )
+                review_btn = _review_btn(
+                    f"Review {len(uncertain_e)} uncertain email(s)", "#2563eb"
+                )
                 sections += (
                     f"<div class='section' style='padding:12px 14px 0'>"
                     f"<div class='section-title uncertain'>\U0001f7e1 Uncertain ({len(uncertain_e)}) \u2014 manual review recommended</div>"
@@ -932,17 +938,21 @@ def save_state(results, generated_at, total_count):
             e["uid"] for e in r.get("emails", [])
             if e.get("ai_label") == "spam"
         ]
-        uncertain_entries = [
-            {
-                "uid": e["uid"],
-                "subject": e.get("subject") or "",
-                "from": e.get("from") or "",
-                "date": e.get("date") or "",
-                "ai_reason": e.get("ai_reason") or "",
-            }
-            for e in r.get("emails", [])
-            if e.get("ai_label") == "uncertain"
-        ]
+        def _review_entries(label):
+            return [
+                {
+                    "uid": e["uid"],
+                    "subject": e.get("subject") or "",
+                    "from": e.get("from") or "",
+                    "date": e.get("date") or "",
+                    "ai_reason": e.get("ai_reason") or "",
+                }
+                for e in r.get("emails", [])
+                if e.get("ai_label") == label
+            ]
+
+        uncertain_entries = _review_entries("uncertain")
+        safe_entries = _review_entries("safe")
         existing_mailboxes[addr] = {
             "email_address": addr,
             "digest_to": r.get("digest_to") or addr,
@@ -955,6 +965,7 @@ def save_state(results, generated_at, total_count):
             "last_run": generated_at,
             "confirmed_spam_uids": confirmed_uids,
             "uncertain_emails": uncertain_entries,
+            "safe_emails": safe_entries,
         }
 
     merged_mailboxes = list(existing_mailboxes.values())
@@ -1080,7 +1091,7 @@ def main():
                 delete_tokens[result["email_address"]] = shared.sign_delete_token(
                     secret, result["email_address"], generated_at
                 )
-            if any(e.get("ai_label") == "uncertain" for e in emails_for_mb):
+            if any(e.get("ai_label") in ("uncertain", "safe") for e in emails_for_mb):
                 # Dry-run must not revoke the user's real review link — reuse
                 # the current nonce as-is. Live runs generate a candidate
                 # that will only be committed on successful send.

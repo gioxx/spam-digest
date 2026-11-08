@@ -419,8 +419,24 @@ def _do_delete_spam(email, ts, token):
 # Review uncertain emails page (/review)
 # ---------------------------------------------------------------------------
 
-def _get_uncertain_for_mailbox(email):
-    """Return the list of uncertain-email dicts persisted for this mailbox."""
+# Review lists persisted by the digest run, keyed by the state-file field.
+# "uncertain" → AI label uncertain, "safe" → AI label safe ("Probably legitimate").
+_REVIEW_KINDS = {
+    "uncertain": "uncertain_emails",
+    "safe": "safe_emails",
+}
+
+_ROW_ACTIONS = ("move_to_inbox", "delete_uncertain", "delete")
+_BULK_ACTIONS = {
+    # action → (review kind, IMAP operation)
+    "delete_all_uncertain": ("uncertain", "delete"),
+    "move_all_safe": ("safe", "move"),
+}
+
+
+def _get_review_list(email, kind):
+    """Return the list of review-email dicts of `kind` persisted for this mailbox."""
+    key = _REVIEW_KINDS[kind]
     state = _get_last_run() or {}
     mb = next(
         (m for m in state.get("mailboxes", []) if m.get("email_address") == email),
@@ -428,11 +444,17 @@ def _get_uncertain_for_mailbox(email):
     )
     if mb is None:
         return []
-    return list(mb.get("uncertain_emails", []) or [])
+    return list(mb.get(key, []) or [])
 
 
-def _remove_uncertain_uid(email, uid):
-    """Drop a UID from the persisted uncertain list so it disappears from /review."""
+def _get_uncertain_for_mailbox(email):
+    """Return the list of uncertain-email dicts persisted for this mailbox."""
+    return _get_review_list(email, "uncertain")
+
+
+def _remove_review_uids(email, uids):
+    """Drop UIDs from every persisted review list so they disappear from /review."""
+    drop = {str(u) for u in uids}
     try:
         with open(STATE_FILE) as f:
             state = json.load(f)
@@ -440,9 +462,11 @@ def _remove_uncertain_uid(email, uid):
         return
     for mb in state.get("mailboxes", []):
         if mb.get("email_address") == email:
-            mb["uncertain_emails"] = [
-                e for e in mb.get("uncertain_emails", []) if e.get("uid") != uid
-            ]
+            for key in _REVIEW_KINDS.values():
+                if key in mb:
+                    mb[key] = [
+                        e for e in (mb.get(key) or []) if str(e.get("uid")) not in drop
+                    ]
             break
     try:
         with open(STATE_FILE, "w") as f:
@@ -451,19 +475,12 @@ def _remove_uncertain_uid(email, uid):
         pass
 
 
-def _do_review_action(email, uid, action, sender_to_trust=None):
-    """Execute a per-row action from the review page.
+def _imap_move_or_delete(email, uids, op):
+    """Move (`op="move"`) or delete (`op="delete"`) `uids` from the spam folder
+    in a single IMAP session with a single EXPUNGE.
 
-    action ∈ {"move_to_inbox", "delete_uncertain"}.
-    Returns (ok: bool, msg: str).
+    Returns (ok: bool, err_or_None). State is not touched here.
     """
-    # A valid review token only grants access to the set of uncertain
-    # messages persisted in the last run. Reject UIDs outside that set so
-    # a crafted request can't move or delete arbitrary spam-folder
-    # messages just because the holder has a review link.
-    allowed_uids = {str(e.get("uid", "")) for e in _get_uncertain_for_mailbox(email)}
-    if str(uid) not in allowed_uids:
-        return False, "This email is not in the current uncertain list."
     cfg = _get_mailbox_config(email)
     if cfg is None:
         return False, f"No IMAP config found for {email}."
@@ -471,28 +488,20 @@ def _do_review_action(email, uid, action, sender_to_trust=None):
     mail, err = _open_imap(cfg, folder=spam_folder)
     if mail is None:
         return False, err
+    uid_set = ",".join(str(u) for u in uids).encode()
     try:
-        uid_b = uid.encode() if isinstance(uid, str) else uid
-        if action == "move_to_inbox":
-            copy_typ, _ = mail.uid("COPY", uid_b, "INBOX")
+        if op == "move":
+            copy_typ, _ = mail.uid("COPY", uid_set, "INBOX")
             if copy_typ != "OK":
                 return False, "IMAP COPY to INBOX failed."
-            store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
-            if store_typ != "OK":
-                return False, "IMAP STORE \\Deleted failed after COPY."
-            mail.expunge()
-            _remove_uncertain_uid(email, uid)
-            if sender_to_trust:
-                shared.add_allowlist_sender(email, sender_to_trust)
-            return True, "Moved to INBOX."
-        if action == "delete_uncertain":
-            store_typ, _ = mail.uid("STORE", uid_b, "+FLAGS", "(\\Deleted)")
-            if store_typ != "OK":
-                return False, "IMAP STORE \\Deleted failed."
-            mail.expunge()
-            _remove_uncertain_uid(email, uid)
-            return True, "Deleted."
-        return False, f"Unknown action: {action}"
+        store_typ, _ = mail.uid("STORE", uid_set, "+FLAGS", "(\\Deleted)")
+        if store_typ != "OK":
+            return False, (
+                "IMAP STORE \\Deleted failed after COPY." if op == "move"
+                else "IMAP STORE \\Deleted failed."
+            )
+        mail.expunge()
+        return True, None
     except ssl.SSLError as e:
         return False, f"SSL error: {e}"
     except imaplib.IMAP4.error as e:
@@ -506,7 +515,229 @@ def _do_review_action(email, uid, action, sender_to_trust=None):
             pass
 
 
-def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="ok"):
+def _do_review_action(email, uid, action, sender_to_trust=None):
+    """Execute a per-row action from the review page.
+
+    action ∈ {"move_to_inbox", "delete_uncertain", "delete"}.
+    Returns (ok: bool, msg: str).
+    """
+    # A valid review token only grants access to the messages persisted in
+    # the last run (uncertain + probably legitimate). Reject UIDs outside
+    # that set so a crafted request can't move or delete arbitrary
+    # spam-folder messages just because the holder has a review link.
+    allowed_uids = {
+        str(e.get("uid", ""))
+        for kind in _REVIEW_KINDS
+        for e in _get_review_list(email, kind)
+    }
+    if str(uid) not in allowed_uids:
+        return False, "This email is not in the current review list."
+    if action not in _ROW_ACTIONS:
+        return False, f"Unknown action: {action}"
+    op = "move" if action == "move_to_inbox" else "delete"
+    ok, err = _imap_move_or_delete(email, [uid], op)
+    if not ok:
+        return False, err
+    _remove_review_uids(email, [uid])
+    if op == "move":
+        if sender_to_trust:
+            shared.add_allowlist_sender(email, sender_to_trust)
+            return True, "Moved to INBOX and sender trusted."
+        return True, "Moved to INBOX."
+    return True, "Deleted."
+
+
+def _do_bulk_review_action(email, action):
+    """Execute a bulk action on a whole review list.
+
+    UIDs come exclusively from the server-side persisted list, never from
+    client-submitted data. On IMAP failure the persisted list is left intact.
+    Returns (ok: bool, msg: str).
+    """
+    if action not in _BULK_ACTIONS:
+        return False, f"Unknown action: {action}"
+    kind, op = _BULK_ACTIONS[action]
+    uids = [str(e.get("uid")) for e in _get_review_list(email, kind) if e.get("uid")]
+    if not uids:
+        return True, "Nothing to do — the list is already empty."
+    ok, err = _imap_move_or_delete(email, uids, op)
+    if not ok:
+        return False, f"{err} No emails were removed from the list."
+    _remove_review_uids(email, uids)
+    n = len(uids)
+    if op == "move":
+        return True, f"Moved {n} email(s) to INBOX."
+    return True, f"Deleted {n} email(s)."
+
+
+_BTN_STYLES = {
+    "ok": (
+        "background:var(--ok-dim);color:var(--ok);border:1px solid var(--ok-border);"
+    ),
+    "err": (
+        "background:var(--err-dim);color:var(--err);border:1px solid var(--err-border);"
+    ),
+    "neutral": (
+        "background:var(--surface);color:var(--text);border:1px solid var(--border);"
+    ),
+}
+
+
+def _review_form(form_action, action, label, confirm, confirm_title, confirm_kind,
+                 style, hidden=None, title=None, size="0.75rem", pad="0.3rem 0.7rem"):
+    """Render one POST form with a single submit button for the review page."""
+    hidden_html = "".join(
+        f"<input type='hidden' name='{escape(k)}' value='{escape(v)}'>"
+        for k, v in (hidden or {}).items()
+    )
+    title_attr = f" title='{escape(title)}'" if title else ""
+    return (
+        f"<form method='POST' action='{form_action}' style='display:inline' "
+        f"data-confirm='{escape(confirm)}' "
+        f"data-confirm-title='{escape(confirm_title)}' data-confirm-kind='{confirm_kind}'>"
+        f"<input type='hidden' name='action' value='{action}'>"
+        f"{hidden_html}"
+        f"<button type='submit' style='{_BTN_STYLES[style]}padding:{pad};"
+        f"border-radius:0.375rem;font-size:{size};cursor:pointer;font-weight:500;"
+        f"white-space:nowrap'{title_attr}>{label}</button></form>"
+    )
+
+
+def _render_review_table(form_action, email_list, kind):
+    """Render the table of review emails for one section (`kind` ∈ _REVIEW_KINDS)."""
+    rows = ""
+    for em in email_list:
+        uid = str(em.get("uid", ""))
+        subject = escape(em.get("subject") or "(no subject)")
+        from_raw = em.get("from") or "unknown"
+        from_esc = escape(from_raw)
+        sender_addr = shared.extract_sender_address(from_raw)
+        date_short = escape((em.get("date") or "")[:16])
+        reason = escape(em.get("ai_reason") or "")
+
+        buttons = [
+            _review_form(
+                form_action, "move_to_inbox", "&#10003; Trust &amp; move to INBOX",
+                "Move this email to INBOX and trust the sender for future digests?",
+                "Trust sender", "primary", "ok",
+                hidden={"uid": uid, "sender": sender_addr, "add_allowlist": "1"},
+                title="Move to INBOX and add sender to allowlist",
+            ),
+        ]
+        if kind == "safe":
+            buttons.append(_review_form(
+                form_action, "move_to_inbox", "&#8618; Move to INBOX",
+                "Move this email to INBOX without trusting the sender?",
+                "Move to INBOX", "primary", "neutral",
+                hidden={"uid": uid},
+                title="Move to INBOX without adding the sender to the allowlist",
+            ))
+        buttons.append(_review_form(
+            form_action, "delete_uncertain" if kind == "uncertain" else "delete",
+            "&#10005; Delete",
+            "Permanently delete this email? This cannot be undone.",
+            "Delete email", "danger", "err",
+            hidden={"uid": uid},
+        ))
+        row_forms = (
+            "<div style='display:flex;flex-wrap:wrap;gap:0.35rem;justify-content:flex-end'>"
+            + "".join(buttons) + "</div>"
+        )
+
+        reason_html = (
+            f"<div style='color:var(--muted);font-size:0.7rem;margin-top:0.2rem'>{reason}</div>"
+            if reason else ""
+        )
+
+        rows += (
+            "<tr>"
+            f"<td style='padding:0.75rem;color:var(--muted);font-size:0.75rem;vertical-align:top;"
+            f"white-space:nowrap'>{date_short}</td>"
+            f"<td style='padding:0.75rem;vertical-align:top;font-family:var(--mono);font-size:0.75rem;"
+            f"color:var(--muted);word-break:break-word'>{from_esc}</td>"
+            f"<td style='padding:0.75rem;vertical-align:top;font-size:0.8125rem;word-break:break-word'>"
+            f"{subject}{reason_html}</td>"
+            f"<td style='padding:0.75rem;vertical-align:top;text-align:right'>"
+            f"{row_forms}</td>"
+            "</tr>"
+        )
+    th = (
+        "<th style='text-align:{align};padding:0.5rem 0.75rem;color:var(--muted);"
+        "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>{label}</th>"
+    )
+    return (
+        "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
+        "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;"
+        "table-layout:fixed'>"
+        "<colgroup>"
+        "<col style='width:11%'><col style='width:22%'><col style='width:35%'><col style='width:32%'>"
+        "</colgroup>"
+        "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
+        + th.format(align="left", label="Date")
+        + th.format(align="left", label="From")
+        + th.format(align="left", label="Subject / reason")
+        + th.format(align="right", label="Action")
+        + "</tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _render_review_section(form_action, email_list, kind):
+    """Render one titled section (heading, help text, bulk button, table)."""
+    n = len(email_list)
+    if kind == "uncertain":
+        title = f"Uncertain emails ({n})"
+        help_html = (
+            "“Trust &amp; move to INBOX” moves the email and adds the sender to your "
+            "allowlist so future messages skip spam classification. "
+            "“Delete” removes it permanently."
+        )
+        bulk = _review_form(
+            form_action, "delete_all_uncertain", f"&#10005; Delete all ({n})",
+            f"Permanently delete all {n} uncertain emails? This cannot be undone.",
+            "Delete all uncertain emails", "danger", "err",
+            size="0.8125rem", pad="0.4rem 0.9rem",
+        ) if n > 1 else ""
+        empty_msg = "No uncertain emails pending review."
+    else:
+        title = f"Probably legitimate ({n})"
+        help_html = (
+            "The AI thinks these were wrongly flagged as spam. "
+            "“Trust &amp; move to INBOX” also adds the sender to your allowlist; "
+            "“Move to INBOX” moves the email only."
+        )
+        bulk = _review_form(
+            form_action, "move_all_safe", f"&#8618; Move all to INBOX ({n})",
+            f"Move all {n} probably legitimate emails to INBOX? "
+            "Senders are not added to the allowlist.",
+            "Move all to INBOX", "primary", "ok",
+            size="0.8125rem", pad="0.4rem 0.9rem",
+        ) if n > 1 else ""
+        empty_msg = "No probably legitimate emails pending review."
+
+    if email_list:
+        inner = _render_review_table(form_action, email_list, kind)
+    else:
+        inner = (
+            "<div style='padding:1rem 1.25rem;background:var(--surface2);"
+            "border:1px solid var(--border);border-radius:var(--radius);color:var(--muted);"
+            f"font-size:0.875rem'>{empty_msg}</div>"
+        )
+    bulk_html = (
+        f"<div style='display:flex;justify-content:flex-end;margin-bottom:0.75rem'>{bulk}</div>"
+        if bulk else ""
+    )
+    return (
+        "<section style='margin-bottom:2rem'>"
+        f"<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.5rem'>{title}</h2>"
+        f"<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:1rem'>{help_html}</p>"
+        f"{bulk_html}{inner}"
+        "</section>"
+    )
+
+
+def _render_review_page(email, token, review_lists, banner=None, banner_kind="ok"):
+    """Render /review. `review_lists` maps kind ("uncertain"/"safe") → list of dicts."""
     email_esc = escape(email)
     token_q = urllib.parse.quote(token, safe="")
     email_q = urllib.parse.quote(email, safe="")
@@ -520,104 +751,36 @@ def _render_review_page(email, token, uncertain_list, banner=None, banner_kind="
             f"{escape(banner)}</div>"
         )
 
-    if not uncertain_list:
-        inner = (
+    uncertain_list = review_lists.get("uncertain") or []
+    safe_list = review_lists.get("safe") or []
+
+    if not uncertain_list and not safe_list:
+        sections = (
             "<div style='padding:1.25rem 1.5rem;background:var(--surface2);"
             "border:1px solid var(--border);border-radius:var(--radius);color:var(--muted);"
-            "font-size:0.875rem'>No uncertain emails pending review. "
+            "font-size:0.875rem'>No emails pending review. "
             "Either the last digest had none, or all have already been reviewed.</div>"
         )
     else:
-        rows = ""
-        for em in uncertain_list:
-            uid = escape(em.get("uid", ""))
-            subject = escape(em.get("subject") or "(no subject)")
-            from_raw = em.get("from") or "unknown"
-            from_esc = escape(from_raw)
-            sender_addr = shared.extract_sender_address(from_raw)
-            sender_hidden = escape(sender_addr)
-            date_short = escape((em.get("date") or "")[:16])
-            reason = escape(em.get("ai_reason") or "")
-
-            row_forms = (
-                "<div style='display:flex;flex-wrap:wrap;gap:0.35rem;justify-content:flex-end'>"
-                f"<form method='POST' action='{form_action}' style='display:inline' "
-                f"data-confirm='Move this email to INBOX and trust the sender for future digests?' "
-                f"data-confirm-title='Trust sender' data-confirm-kind='primary'>"
-                f"<input type='hidden' name='action' value='move_to_inbox'>"
-                f"<input type='hidden' name='uid' value='{uid}'>"
-                f"<input type='hidden' name='sender' value='{sender_hidden}'>"
-                f"<input type='hidden' name='add_allowlist' value='1'>"
-                f"<button type='submit' style='background:var(--ok-dim);color:var(--ok);"
-                f"border:1px solid var(--ok-border);padding:0.3rem 0.7rem;border-radius:0.375rem;"
-                f"font-size:0.75rem;cursor:pointer;font-weight:500;white-space:nowrap' "
-                f"title='Move to INBOX and add sender to allowlist'>"
-                f"&#10003; Trust &amp; move to INBOX</button></form>"
-                f"<form method='POST' action='{form_action}' style='display:inline' "
-                f"data-confirm='Permanently delete this email? This cannot be undone.' "
-                f"data-confirm-title='Delete email' data-confirm-kind='danger'>"
-                f"<input type='hidden' name='action' value='delete_uncertain'>"
-                f"<input type='hidden' name='uid' value='{uid}'>"
-                f"<button type='submit' style='background:var(--err-dim);color:var(--err);"
-                f"border:1px solid var(--err-border);padding:0.3rem 0.7rem;border-radius:0.375rem;"
-                f"font-size:0.75rem;cursor:pointer;font-weight:500;white-space:nowrap'>"
-                f"&#10005; Delete</button></form>"
-                "</div>"
-            )
-
-            reason_html = (
-                f"<div style='color:var(--muted);font-size:0.7rem;margin-top:0.2rem'>{reason}</div>"
-                if reason else ""
-            )
-
-            rows += (
-                "<tr>"
-                f"<td style='padding:0.75rem;color:var(--muted);font-size:0.75rem;vertical-align:top;"
-                f"white-space:nowrap'>{date_short}</td>"
-                f"<td style='padding:0.75rem;vertical-align:top;font-family:var(--mono);font-size:0.75rem;"
-                f"color:var(--muted);word-break:break-word'>{from_esc}</td>"
-                f"<td style='padding:0.75rem;vertical-align:top;font-size:0.8125rem;word-break:break-word'>"
-                f"{subject}{reason_html}</td>"
-                f"<td style='padding:0.75rem;vertical-align:top;text-align:right'>"
-                f"{row_forms}</td>"
-                "</tr>"
-            )
-        inner = (
-            "<table style='width:100%;border-collapse:collapse;background:var(--surface2);"
-            "border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;"
-            "table-layout:fixed'>"
-            "<colgroup>"
-            "<col style='width:11%'><col style='width:22%'><col style='width:35%'><col style='width:32%'>"
-            "</colgroup>"
-            "<thead><tr style='background:var(--surface);border-bottom:1px solid var(--border)'>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Date</th>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>From</th>"
-            "<th style='text-align:left;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Subject / reason</th>"
-            "<th style='text-align:right;padding:0.5rem 0.75rem;color:var(--muted);"
-            "font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em'>Action</th>"
-            "</tr></thead>"
-            f"<tbody>{rows}</tbody></table>"
-        )
+        sections = ""
+        # Always show the uncertain section (it was the original page); show
+        # the probably-legitimate one only when it has something in it.
+        sections += _render_review_section(form_action, uncertain_list, "uncertain")
+        if safe_list:
+            sections += _render_review_section(form_action, safe_list, "safe")
 
     body_html = (
         "<main style='max-width:1024px;margin:2rem auto;padding:0 1.5rem'>"
         f"{banner_html}"
-        f"<h2 style='font-size:1.125rem;font-weight:600;margin-bottom:0.5rem'>Uncertain emails ({len(uncertain_list)})</h2>"
-        "<p style='color:var(--muted);font-size:0.8125rem;margin-bottom:1rem'>"
-        "\u201cTrust &amp; move to INBOX\u201d moves the email and adds the sender to your allowlist "
-        "so future messages skip spam classification. \u201cDelete\u201d removes it permanently.</p>"
-        f"{inner}"
+        f"{sections}"
         "<p style='color:var(--muted);font-size:0.75rem;margin-top:2rem;text-align:center'>"
-        "This page lists emails classified as Uncertain in the most recent digest run. "
-        "It refreshes after each digest run.</p>"
+        "This page lists emails classified as Uncertain or Probably legitimate in the most "
+        "recent digest run. It refreshes after each digest run.</p>"
         "</main>"
     )
     return _page_shell(
-        page_title=f"Review uncertain — {email}",
-        subtitle_html=f"Review &nbsp;\u00b7&nbsp; {email_esc}",
+        page_title=f"Review — {email}",
+        subtitle_html=f"Review &nbsp;·&nbsp; {email_esc}",
         body_html=body_html,
     )
 
@@ -627,7 +790,7 @@ def _handle_review_request(email, token, form=None):
     if not ok:
         body = _render_result_page(
             page_title="Access denied — Spam Digest",
-            subtitle_html="Review &nbsp;\u00b7&nbsp; access denied",
+            subtitle_html="Review &nbsp;·&nbsp; access denied",
             status_word="Access denied",
             status_color="var(--err)",
             message=reason,
@@ -640,7 +803,12 @@ def _handle_review_request(email, token, form=None):
     if form is not None:
         action = (form.get("action", [""]) or [""])[0]
         uid = (form.get("uid", [""]) or [""])[0]
-        if action in ("move_to_inbox", "delete_uncertain") and uid:
+        if action in _BULK_ACTIONS:
+            done, msg = _do_bulk_review_action(email, action)
+            banner = msg
+            banner_kind = "ok" if done else "err"
+            print(f"[review] action={action} email={email} ok={done} | {msg}", flush=True)
+        elif action in _ROW_ACTIONS and uid:
             sender = None
             if action == "move_to_inbox" and (form.get("add_allowlist", [""]) or [""])[0] == "1":
                 sender = (form.get("sender", [""]) or [""])[0].strip() or None
@@ -652,8 +820,8 @@ def _handle_review_request(email, token, form=None):
             banner = "Invalid action or missing UID."
             banner_kind = "err"
 
-    uncertain_list = _get_uncertain_for_mailbox(email)
-    body = _render_review_page(email, token, uncertain_list, banner=banner, banner_kind=banner_kind).encode("utf-8")
+    review_lists = {kind: _get_review_list(email, kind) for kind in _REVIEW_KINDS}
+    body = _render_review_page(email, token, review_lists, banner=banner, banner_kind=banner_kind).encode("utf-8")
     return 200, body, {"Content-Type": "text/html; charset=utf-8"}
 
 
