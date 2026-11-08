@@ -116,6 +116,33 @@ class WebTests(unittest.TestCase):
         status = self.req("POST", "/action/delete-spam", form={"x": "y" * 5000})[0]
         self.assertEqual(status, 413)
 
+    # --- active configuration panel / startup summary --------------------
+    def test_active_configuration_lists_only_set_vars_and_masks_secrets(self):
+        env = {"EMAIL_PROVIDER": "resend", "RESEND_API_KEY": "re_TOPSECRET", "AI_MODEL": "claude-haiku-5-5",
+               "MAILBOX_CONFIGS": '[{"imap_server":"i.example.com","email_user":"a@example.com","email_pass":"PWSECRET"}]'}
+        old = {k: os.environ.get(k) for k in list(env) + ["SMTP_HOST"]}
+        os.environ.update(env)
+        os.environ.pop("SMTP_HOST", None)
+        try:
+            html = self.req("GET", "/")[2]
+            summary = "\n".join(ss._startup_summary())
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+        self.assertIn("Active configuration", html)
+        self.assertIn("<td>EMAIL_PROVIDER</td><td><code>resend</code>", html)
+        self.assertIn("<td>AI_MODEL</td><td><code>claude-haiku-5-5</code>", html)
+        self.assertIn("<td>MAILBOX_CONFIGS</td><td><code>1 mailbox</code>", html)
+        self.assertIn("set (hidden)", html)
+        self.assertNotIn("<td>SMTP_HOST</td>", html, "unset variables are not listed")
+        for secret in ("re_TOPSECRET", "PWSECRET"):
+            self.assertNotIn(secret, html)
+            self.assertNotIn(secret, summary)
+        self.assertIn("EMAIL_PROVIDER=resend", summary)
+        self.assertIn("AI: disabled", summary)  # AI_PROVIDER not set
+
     # --- optional dashboard login (#42, #48) -----------------------------
     def test_login_disabled_by_default(self):
         self.assertEqual(self.req("GET", "/")[0], 200)

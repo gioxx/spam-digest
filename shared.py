@@ -20,7 +20,7 @@ import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 
 DATA_DIR = "/data"
 STATE_FILE = os.path.join(DATA_DIR, "spam_digest_last_run.json")
@@ -44,6 +44,7 @@ _VALID_PURPOSES = (PURPOSE_FILTERS, PURPOSE_REVIEW)
 
 DEFAULT_SPAM_FOLDER = "Junk"
 DEFAULT_MAX_EMAILS = 100
+DEFAULT_AI_MODEL = "claude-haiku-5-5"
 
 
 def parse_int(value, default, name):

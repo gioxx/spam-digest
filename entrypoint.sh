@@ -35,6 +35,12 @@ RUN_AS_APP=(setpriv --reuid="$APP_USER" --regid="$APP_USER" --init-groups)
 # would otherwise get chmod'ed): chown -h changes links themselves, and
 # find without -L only matches regular files, on this filesystem only.
 mkdir -p /data
+legacy=$(find /data -xdev ! -user "$APP_USER" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$legacy" -gt 0 ]; then
+    echo "[entrypoint] /data: handing $legacy item(s) over to the '$APP_USER' user (written by an older image or as root)."
+else
+    echo "[entrypoint] /data: already owned by '$APP_USER', nothing to migrate."
+fi
 chown -hR "$APP_USER:$APP_USER" /data
 chmod 700 /data
 find /data -xdev -maxdepth 1 -type f \( -name '*.json' -o -name '*.key' \) -exec chmod 600 {} +
@@ -53,6 +59,7 @@ chmod 600 /tmp/container_env.sh
 echo "$SCHEDULE_MIN $SCHEDULE_HOUR * * $SCHEDULE_DAY ${RUN_AS_APP[*]} /bin/bash -c 'source /tmp/container_env.sh && /usr/local/bin/python3 /app/spam_digest.py' >> /proc/1/fd/1 2>&1" > /tmp/cronjob
 
 crontab /tmp/cronjob
+echo "[entrypoint] digest schedule: $SCHEDULE_MIN $SCHEDULE_HOUR * * $SCHEDULE_DAY (TZ=${TZ:-UTC}); digest and web server run as '$APP_USER' (uid $(id -u "$APP_USER"))."
 
 # Start the web dashboard.
 : "${WEB_PORT:=8080}"
