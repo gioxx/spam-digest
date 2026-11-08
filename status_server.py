@@ -79,6 +79,45 @@ def _rate_limit_check(ip):
     return True
 
 
+# Failed dashboard logins, per IP. Checked BEFORE the credentials are, so
+# once an IP is blocked even the right password gets 429: otherwise a
+# blocked attacker could keep guessing and spot success by the 200.
+_AUTH_FAIL_WINDOW_SECS = 300
+_AUTH_FAIL_MAX = 10
+_auth_fail_state = collections.defaultdict(collections.deque)
+
+
+def _auth_blocked(ip):
+    """True when `ip` reached the failed-login limit in the current window."""
+    cutoff = time.monotonic() - _AUTH_FAIL_WINDOW_SECS
+    with _rate_lock:
+        dq = _auth_fail_state.get(ip)
+        if not dq:
+            return False
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        if not dq:
+            _auth_fail_state.pop(ip, None)
+            return False
+        return len(dq) >= _AUTH_FAIL_MAX
+
+
+def _auth_record_failure(ip):
+    now = time.monotonic()
+    cutoff = now - _AUTH_FAIL_WINDOW_SECS
+    with _rate_lock:
+        dq = _auth_fail_state[ip]
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        dq.append(now)
+        if len(_auth_fail_state) > 1024:
+            for k, v in list(_auth_fail_state.items()):
+                while v and v[0] < cutoff:
+                    v.popleft()
+                if not v:
+                    _auth_fail_state.pop(k, None)
+
+
 def _log_action(ip, action, email=None, result=None, detail=None):
     """Append a single JSON line to /data/actions.log. Best-effort; never raises."""
     entry = {
@@ -1983,22 +2022,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         """Return True (and respond) when the dashboard login blocks this request.
 
         Only dashboard pages and dashboard actions are protected, and only
-        when DASHBOARD_PASS is set. Failed attempts count against the
-        per-IP rate limit, so guessing gets a 429 after a few tries.
+        when DASHBOARD_PASS is set. After _AUTH_FAIL_MAX failed logins in
+        _AUTH_FAIL_WINDOW_SECS an IP gets 429 for every request, checked
+        before the credentials so a correct guess is not revealed.
         """
         if path not in _DASHBOARD_PAGES and path not in _DASHBOARD_POST_PATHS:
             return False
         creds = _dashboard_credentials()
-        if creds is None or _check_basic_auth(self.headers.get("Authorization"), creds):
+        if creds is None:
             return False
         ip = self._client_ip()
-        if self.headers.get("Authorization") and not _rate_limit_check(ip):
+        if _auth_blocked(ip):
             _log_action(ip, f"{self.command} {path}", result="rate_limited", detail="dashboard auth")
-            body = b"Too many requests. Try again in a minute."
+            body = b"Too many failed logins. Try again later."
             self.send_response(429)
-            self.send_header("Retry-After", str(_RATE_LIMIT_WINDOW_SECS))
+            self.send_header("Retry-After", str(_AUTH_FAIL_WINDOW_SECS))
+        elif _check_basic_auth(self.headers.get("Authorization"), creds):
+            return False
         else:
             if self.headers.get("Authorization"):
+                # Only real attempts count; the browser's first request
+                # without credentials just triggers the login prompt.
+                _auth_record_failure(ip)
                 _log_action(ip, f"{self.command} {path}", result="unauthorized", detail="dashboard auth")
             body = b"Authentication required."
             self.send_response(401)
