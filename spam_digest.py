@@ -294,6 +294,7 @@ def fetch_spam_emails(cfg, dry_run=False):
     error_msg = None
     status = "success"
     mail = None
+    uidvalidity = None
 
     imap_server = cfg["imap_server"]
     imap_port = cfg["imap_port"]
@@ -324,6 +325,7 @@ def fetch_spam_emails(cfg, dry_run=False):
                     if folder != spam_folder:
                         logging.info("Spam folder '%s' not found; using '%s' instead.", spam_folder, folder)
                         spam_folder = folder
+                    uidvalidity = shared.read_uidvalidity(mail)
                     selected = True
                     break
             except Exception:
@@ -422,6 +424,7 @@ def fetch_spam_emails(cfg, dry_run=False):
         "email_address": email_address,
         "digest_to": cfg.get("digest_to", ""),
         "spam_folder": spam_folder,
+        "uidvalidity": uidvalidity,
         "emails": mails,
         "count": len(mails),
         "auto_deleted": auto_deleted,
@@ -999,6 +1002,9 @@ def save_state(results, generated_at, total_count):
                 "email_address": addr,
                 "digest_to": r.get("digest_to") or addr,
                 "spam_folder": r["spam_folder"],
+                # UIDs below are only valid for this UIDVALIDITY; the web
+                # server refuses to act on them if the folder's value changed.
+                "uidvalidity": r.get("uidvalidity"),
                 "status": r["status"],
                 "count": r["count"],
                 "duration_seconds": round(r["duration_seconds"], 3),

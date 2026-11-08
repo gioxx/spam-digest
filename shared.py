@@ -97,6 +97,28 @@ def data_lock():
             fh.close()
 
 
+def read_uidvalidity(mail):
+    """Return the selected folder's UIDVALIDITY as an int, or None.
+
+    Call right after a successful SELECT: imaplib keeps the untagged
+    ``* OK [UIDVALIDITY n]`` response, and response() consumes it. UIDs
+    stored from a previous session are only valid while this value is
+    unchanged (RFC 3501, 2.3.1.1).
+    """
+    try:
+        typ, data = mail.response("UIDVALIDITY")
+    except Exception:
+        return None
+    for item in data or []:
+        if item is None:
+            continue
+        try:
+            return int(item.decode() if isinstance(item, bytes) else item)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def load_or_create_secret():
     """Return the 32-byte HMAC signing secret, creating it on first use.
 

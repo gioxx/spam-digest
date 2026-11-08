@@ -474,6 +474,27 @@ def _imap_move_or_delete(email, uids, op):
     mail, err = _open_imap(cfg, folder=_spam_folder_for(email, cfg))
     if mail is None:
         return False, err
+    # Stored UIDs are only meaningful for the UIDVALIDITY they were read
+    # with. If the folder was recreated or the server reset it, the same
+    # numbers may now point to different messages: refuse rather than
+    # delete or move the wrong email.
+    expected = (_get_state_mailbox(email) or {}).get("uidvalidity")
+    current = shared.read_uidvalidity(mail)
+    if expected is None or current is None or int(expected) != current:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+        print(
+            f"[imap] UIDVALIDITY check failed for {email}: "
+            f"stored={expected} current={current}",
+            flush=True,
+        )
+        return False, (
+            "The mailbox changed since the last digest (or the digest predates "
+            "this check), so the stored email IDs can't be trusted. Nothing was "
+            "changed; wait for the next digest and use its links."
+        )
     uid_set = ",".join(str(u) for u in uids).encode()
     try:
         if op == "move":
