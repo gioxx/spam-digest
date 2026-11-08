@@ -29,10 +29,15 @@ RUN_AS_APP=(setpriv --reuid="$APP_USER" --regid="$APP_USER" --init-groups)
 # Persistent data directory: state, nonces and the signing secret live
 # here. Volumes created by older (root) images are handed over to the app
 # user, and kept owner-only.
+#
+# /data is writable by "app", so this root-run block must never follow a
+# link it finds there (a planted /data/x.json -> /app/status_server.py
+# would otherwise get chmod'ed): chown -h changes links themselves, and
+# find without -L only matches regular files, on this filesystem only.
 mkdir -p /data
-chown -R "$APP_USER:$APP_USER" /data
+chown -hR "$APP_USER:$APP_USER" /data
 chmod 700 /data
-chmod 600 /data/*.json /data/*.key 2>/dev/null || true
+find /data -xdev -maxdepth 1 -type f \( -name '*.json' -o -name '*.key' \) -exec chmod 600 {} +
 
 # Dump container environment for cron (cron does not inherit Docker env vars).
 # The file holds every secret (IMAP/SMTP passwords, API keys): readable only
