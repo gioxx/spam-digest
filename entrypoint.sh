@@ -60,4 +60,6 @@ if [ "$RUN_ON_START" = "true" ]; then
     "${RUN_AS_APP[@]}" /usr/local/bin/python3 /app/spam_digest.py || true
 fi
 
-cron -f
+# Replace this shell with cron so no extra root process stays around and
+# cron becomes PID 1 (signals from `docker stop` reach it directly).
+exec cron -f

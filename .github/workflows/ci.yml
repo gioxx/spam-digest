@@ -65,6 +65,8 @@ jobs:
           assert server == ["app"], f"web server must run as app: {server}"
           cron = [u for c, u in procs.items() if c.startswith("cron")]
           assert cron == ["root"], f"cron should be the only root service: {cron}"
+          root_procs = sorted(c for c, u in procs.items() if u == "root")
+          assert all(c.startswith("cron") for c in root_procs), f"unexpected root processes: {root_procs}"
           assert not [c for c, u in procs.items() if u == "root" and "python" in c], "no python as root"
 
           st = os.stat("/data")
