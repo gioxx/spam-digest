@@ -40,7 +40,10 @@ jobs:
 
       - name: Check processes, files and cron job
         run: |
-          docker exec sd python3 - <<'PY'
+          # -i is required: without it docker exec gives python an empty
+          # stdin and the check silently does nothing. The grep below makes
+          # the step fail unless the script really ran to the end.
+          docker exec -i sd python3 - > check.log 2>&1 <<'PY' || { cat check.log; exit 1; }
           import os, pwd, stat
 
           procs = {}
@@ -76,6 +79,8 @@ jobs:
           assert pwd.getpwuid(env.st_uid).pw_name == "app" and stat.S_IMODE(env.st_mode) == 0o600, "env dump perms"
           print("processes and permissions OK")
           PY
+          cat check.log
+          grep -q "processes and permissions OK" check.log
           docker exec sd crontab -l | tee /dev/stderr | grep -q "setpriv --reuid=app --regid=app --init-groups"
 
       - name: Run a digest as the cron job would
