@@ -355,16 +355,20 @@ def _spam_folder_for(email, cfg):
 
 
 def _check_delete_link(email, ts, token):
-    """Validate a delete-spam link. Returns (ok, msg, uids)."""
+    """Validate a delete-spam link. Returns (ok, msg, uids, snapshot).
+
+    `snapshot` is the state entry the UIDs were read from; pass it to
+    _imap_move_or_delete so the UIDVALIDITY check uses the same read.
+    """
     secret = shared.load_secret()
     if secret is None:
-        return False, "Secret key not found — run the digest at least once first.", []
+        return False, "Secret key not found — run the digest at least once first.", [], None
     ok, reason = _verify_delete_token(secret, email, ts, token)
     if not ok:
-        return False, f"Access denied: {reason}.", []
+        return False, f"Access denied: {reason}.", [], None
     mb_state = _get_state_mailbox(email)
     if mb_state is None:
-        return False, f"Mailbox {email} not found in state.", []
+        return False, f"Mailbox {email} not found in state.", [], None
     uids = [str(u) for u in (mb_state.get("confirmed_spam_uids") or [])]
     # The link may only act on the UIDs of the run it was issued for. An
     # older (still unexpired) link must not delete the spam of a newer run
@@ -374,10 +378,10 @@ def _check_delete_link(email, ts, token):
         return False, (
             "This link belongs to an older digest. Use the link in the most "
             "recent digest email."
-        ), []
+        ), [], None
     if not uids:
-        return True, "No confirmed spam on record — already deleted or the digest had none.", []
-    return True, "ok", uids
+        return True, "No confirmed spam on record — already deleted or the digest had none.", [], None
+    return True, "ok", uids, mb_state
 
 
 def _do_delete_spam(email, ts, token):
@@ -385,23 +389,28 @@ def _do_delete_spam(email, ts, token):
 
     Returns (success: bool, message: str).
     """
-    ok, msg, uids = _check_delete_link(email, ts, token)
+    ok, msg, uids, snapshot = _check_delete_link(email, ts, token)
     if not ok or not uids:
         return ok, msg
-    ok, err = _imap_move_or_delete(email, uids, "delete")
+    ok, err = _imap_move_or_delete(email, uids, "delete", snapshot)
     if not ok:
         return False, f"{err} Nothing was deleted; you can retry."
-    # Clear UIDs so the link becomes a no-op if clicked again.
+    # Clear UIDs so the link becomes a no-op if clicked again — only if the
+    # state still belongs to the same run (a digest may have finished
+    # meanwhile; its new list must not be touched).
     with shared.data_lock():
         state = _get_last_run() or {}
+        changed = False
         for mb in state.get("mailboxes", []):
-            if mb.get("email_address") == email:
+            if mb.get("email_address") == email and mb.get("last_run") == snapshot.get("last_run"):
                 mb["confirmed_spam_uids"] = []
+                changed = True
                 break
-        try:
-            shared.atomic_write_json(STATE_FILE, state)
-        except OSError as e:
-            print(f"[delete-spam] could not update state: {e}", flush=True)
+        if changed:
+            try:
+                shared.atomic_write_json(STATE_FILE, state)
+            except OSError as e:
+                print(f"[delete-spam] could not update state: {e}", flush=True)
     return True, f"Deleted {len(uids)} confirmed spam email(s) from {email}."
 
 
@@ -442,8 +451,12 @@ def _get_uncertain_for_mailbox(email):
     return _get_review_list(email, "uncertain")
 
 
-def _remove_review_uids(email, uids):
-    """Drop UIDs from every persisted review list so they disappear from /review."""
+def _remove_review_uids(email, uids, run=None):
+    """Drop UIDs from every persisted review list so they disappear from /review.
+
+    With `run` set, nothing is changed unless the mailbox state still comes
+    from that digest run (a newer run's lists must not be edited by UID).
+    """
     drop = {str(u) for u in uids}
     with shared.data_lock():
         state = _get_last_run()
@@ -451,6 +464,8 @@ def _remove_review_uids(email, uids):
             return
         for mb in state.get("mailboxes", []):
             if mb.get("email_address") == email:
+                if run is not None and mb.get("last_run") != run:
+                    return
                 for key in _REVIEW_KINDS.values():
                     if key in mb:
                         mb[key] = [
@@ -463,23 +478,29 @@ def _remove_review_uids(email, uids):
             print(f"[review] could not update state: {e}", flush=True)
 
 
-def _imap_move_or_delete(email, uids, op):
+def _imap_move_or_delete(email, uids, op, snapshot):
     """Move (`op="move"`) or delete (`op="delete"`) `uids` from the spam folder
     in a single IMAP session with a single EXPUNGE.
 
-    Returns (ok: bool, err_or_None). State is not touched here.
+    `snapshot` is the state entry the UIDs were taken from. Folder and
+    expected UIDVALIDITY come from that same entry, never from a fresh
+    read: a digest finishing in between could otherwise pair old UIDs with
+    a new UIDVALIDITY. Returns (ok: bool, err_or_None). State is not
+    touched here.
     """
     cfg = _get_mailbox_config(email)
     if cfg is None:
         return False, f"No IMAP config found for {email}."
-    mail, err = _open_imap(cfg, folder=_spam_folder_for(email, cfg))
+    snapshot = snapshot or {}
+    folder = snapshot.get("spam_folder") or cfg.get("spam_folder") or "Junk"
+    mail, err = _open_imap(cfg, folder=folder)
     if mail is None:
         return False, err
     # Stored UIDs are only meaningful for the UIDVALIDITY they were read
     # with. If the folder was recreated or the server reset it, the same
     # numbers may now point to different messages: refuse rather than
     # delete or move the wrong email.
-    expected = (_get_state_mailbox(email) or {}).get("uidvalidity")
+    expected = snapshot.get("uidvalidity")
     current = shared.read_uidvalidity(mail)
     if expected is None or current is None or int(expected) != current:
         try:
@@ -533,20 +554,21 @@ def _do_review_action(email, uid, action, sender_to_trust=None):
     # the last run (uncertain + probably legitimate). Reject UIDs outside
     # that set so a crafted request can't move or delete arbitrary
     # spam-folder messages just because the holder has a review link.
+    snapshot = _get_state_mailbox(email) or {}
     allowed_uids = {
         str(e.get("uid", ""))
-        for kind in _REVIEW_KINDS
-        for e in _get_review_list(email, kind)
+        for key in _REVIEW_KINDS.values()
+        for e in (snapshot.get(key) or [])
     }
     if str(uid) not in allowed_uids:
         return False, "This email is not in the current review list."
     if action not in _ROW_ACTIONS:
         return False, f"Unknown action: {action}"
     op = "move" if action == "move_to_inbox" else "delete"
-    ok, err = _imap_move_or_delete(email, [uid], op)
+    ok, err = _imap_move_or_delete(email, [uid], op, snapshot)
     if not ok:
         return False, err
-    _remove_review_uids(email, [uid])
+    _remove_review_uids(email, [uid], run=snapshot.get("last_run"))
     if op == "move":
         if sender_to_trust:
             shared.add_allowlist_sender(email, sender_to_trust)
@@ -565,13 +587,14 @@ def _do_bulk_review_action(email, action):
     if action not in _BULK_ACTIONS:
         return False, f"Unknown action: {action}"
     kind, op = _BULK_ACTIONS[action]
-    uids = [str(e.get("uid")) for e in _get_review_list(email, kind) if e.get("uid")]
+    snapshot = _get_state_mailbox(email) or {}
+    uids = [str(e.get("uid")) for e in (snapshot.get(_REVIEW_KINDS[kind]) or []) if e.get("uid")]
     if not uids:
         return True, "Nothing to do — the list is already empty."
-    ok, err = _imap_move_or_delete(email, uids, op)
+    ok, err = _imap_move_or_delete(email, uids, op, snapshot)
     if not ok:
         return False, f"{err} No emails were removed from the list."
-    _remove_review_uids(email, uids)
+    _remove_review_uids(email, uids, run=snapshot.get("last_run"))
     n = len(uids)
     if op == "move":
         return True, f"Moved {n} email(s) to INBOX."
@@ -2078,7 +2101,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # GET never deletes: mail scanners and link previewers follow
             # links in emails. Show a confirmation page whose button POSTs.
             if email and ts and token and _EMAIL_RE.match(email):
-                ok, msg, uids = _check_delete_link(email, ts, token)
+                ok, msg, uids, _ = _check_delete_link(email, ts, token)
             else:
                 ok, msg, uids = False, "Missing or invalid parameters.", []
             _log_action(
