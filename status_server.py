@@ -102,20 +102,43 @@ def _auth_blocked(ip):
         return len(dq) >= _AUTH_FAIL_MAX
 
 
-def _auth_record_failure(ip):
+def _auth_reserve_attempt(ip):
+    """Atomically check the lockout and reserve a slot for one login attempt.
+
+    Returns a reservation (a timestamp) or None when `ip` is blocked. The
+    slot counts as a failure until _auth_release_attempt() is called after
+    a successful login, so a burst of concurrent attempts can't all slip
+    past the check before any failure is recorded.
+    """
     now = time.monotonic()
     cutoff = now - _AUTH_FAIL_WINDOW_SECS
     with _rate_lock:
         dq = _auth_fail_state[ip]
         while dq and dq[0] < cutoff:
             dq.popleft()
+        if len(dq) >= _AUTH_FAIL_MAX:
+            return None
         dq.append(now)
         if len(_auth_fail_state) > 1024:
             for k, v in list(_auth_fail_state.items()):
                 while v and v[0] < cutoff:
                     v.popleft()
-                if not v:
+                if not v and k != ip:
                     _auth_fail_state.pop(k, None)
+        return now
+
+
+def _auth_release_attempt(ip, reservation):
+    """Give back the slot of a successful login."""
+    with _rate_lock:
+        dq = _auth_fail_state.get(ip)
+        if dq:
+            try:
+                dq.remove(reservation)
+            except ValueError:
+                pass
+            if not dq:
+                _auth_fail_state.pop(ip, None)
 
 
 def _log_action(ip, action, email=None, result=None, detail=None):
@@ -2032,18 +2055,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if creds is None:
             return False
         ip = self._client_ip()
-        if _auth_blocked(ip):
+        header = self.headers.get("Authorization")
+        # Only requests carrying credentials are attempts; the browser's
+        # first request without them just triggers the login prompt.
+        reservation = _auth_reserve_attempt(ip) if header else None
+        blocked = (header and reservation is None) or (not header and _auth_blocked(ip))
+        if blocked:
             _log_action(ip, f"{self.command} {path}", result="rate_limited", detail="dashboard auth")
             body = b"Too many failed logins. Try again later."
             self.send_response(429)
             self.send_header("Retry-After", str(_AUTH_FAIL_WINDOW_SECS))
-        elif _check_basic_auth(self.headers.get("Authorization"), creds):
+        elif header and _check_basic_auth(header, creds):
+            _auth_release_attempt(ip, reservation)
             return False
         else:
-            if self.headers.get("Authorization"):
-                # Only real attempts count; the browser's first request
-                # without credentials just triggers the login prompt.
-                _auth_record_failure(ip)
+            if header:
                 _log_action(ip, f"{self.command} {path}", result="unauthorized", detail="dashboard auth")
             body = b"Authentication required."
             self.send_response(401)
@@ -2349,6 +2375,8 @@ if __name__ == "__main__":
     # block every other request. Shared files are guarded by shared.data_lock().
     http.server.ThreadingHTTPServer.allow_reuse_address = True
     http.server.ThreadingHTTPServer.daemon_threads = True
+    # The default listen backlog (5) resets connections under a burst.
+    http.server.ThreadingHTTPServer.request_queue_size = 64
     with http.server.ThreadingHTTPServer(("", port), _Handler) as httpd:
         print(f"Status dashboard listening on port {port}", flush=True)
         httpd.serve_forever()
