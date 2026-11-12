@@ -7,7 +7,7 @@ digest of what landed there. An optional AI step labels each email **probably le
 **uncertain** or **spam** (only sender and subject are sent), and signed links in the digest
 let you rescue, trust or delete emails from a web page.
 
-**Website:** [spamdigest.gioxx.org](https://spamdigest.gioxx.org) · **Documentation:** [kb.gioxx.org/Projects/spam-digest](https://kb.gioxx.org/Projects/spam-digest)
+**Website:** [spamdigest.gxware.org](https://spamdigest.gxware.org) · **Documentation:** [kb.gioxx.org/Projects/spam-digest](https://kb.gioxx.org/Projects/spam-digest)
 
 [![](https://img.shields.io/github/issues/gioxx/spam-digest.svg)](https://github.com/gioxx/spam-digest/issues)
 [![](https://img.shields.io/github/issues-pr-raw/gioxx/spam-digest.svg)](https://github.com/gioxx/spam-digest/pulls)

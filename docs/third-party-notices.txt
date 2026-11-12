@@ -1,4 +1,4 @@
-Third-party notices for spamdigest.gioxx.org
+Third-party notices for spamdigest.gxware.org
 
 spam-digest is released under the MIT license:
 https://github.com/gioxx/spam-digest/blob/main/LICENSE
