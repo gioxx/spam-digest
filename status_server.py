@@ -1631,7 +1631,7 @@ def _page_shell(page_title, subtitle_html, body_html,
 
 def _footer_links():
     links = (
-        ("https://spamdigest.gioxx.org", "Website"),
+        ("https://spamdigest.gxware.org", "Website"),
         ("https://kb.gioxx.org/Projects/spam-digest", "Documentation"),
         (f"https://github.com/gioxx/spam-digest/releases/tag/{APP_VERSION}", None),
         ("https://github.com/gioxx/spam-digest/issues", "Report an issue"),
